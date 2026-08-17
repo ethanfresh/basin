@@ -6,7 +6,7 @@ Basin builds and maintains a structured dataset of the operating metrics that ma
 
 It is built for people who need this data and cannot justify an enterprise terminal seat: smaller investment firms, lenders, consultants, corporate development teams, and accounting firms.
 
-> **Status: pre-implementation.** No code has been written yet. The vertical is chosen and the filer population and data availability have been verified against live SEC APIs (see [Feasibility](#feasibility-verified-against-live-sec-data)). The repository currently contains this README and the session handoff document that established the direction.
+> **Status: Facts layer running.** The XBRL client and the fact store are built and have ingested live filings for five producers. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
 >
 > *The name `Basin` is a working title — chosen because it is vertical-specific and avoids the collision with the unrelated "FinAgent" system from Zhang et al., KDD '24.*
 
@@ -109,6 +109,22 @@ Two of the ten sampled companies expose essentially no reserve concepts at all. 
 
 The pattern is unfavorable in a specific way: the **per-unit economics** — realized price per barrel, production cost per barrel — are the most commercially valuable figures and the least reliably tagged.
 
+#### Re-verified after building the client
+
+Running the coverage report over nine producers confirmed the sampling above and sharpened it in two ways:
+
+- **Tagged is not the same as current.** Several filers tag a concept and then stop. EOG's reserve concepts end at FY2021; Matador's at FY2012; Murphy's total proved at FY2018. Counting "ever tagged" overstates usable coverage by roughly a third, so the coverage report scores currency separately.
+- **Some large filers tag no reserve data at all.** ConocoPhillips and Occidental expose no reserve, production, or standardized-measure concepts in any taxonomy — ConocoPhillips's entire `srt` namespace is two tags, and Occidental has no `srt` namespace. This is absence, not inconsistency, and it means cohort selection has to be driven by measured coverage rather than by company size.
+
+| Concept | Current (period ≥ 2023) | Ever tagged |
+|---|---|---|
+| Proved developed reserves | 4 / 9 | 5 / 9 |
+| Standardized measure | 4 / 9 | 6 / 9 |
+| Capex | 4 / 9 | 6 / 9 |
+| Production volume | 2 / 9 | 2 / 9 |
+| Average realized price | 1 / 9 | 2 / 9 |
+| Production cost per BOE | 0 / 9 | 1 / 9 |
+
 **This narrows the free path without undermining the thesis.** SEC Regulation S-K Subpart 1200 and ASC 932 require these disclosures to appear in every 10-K, in defined terms. The data is unambiguously present in the documents; it is simply not always machine-readable. That yields the thing the architecture actually depends on — **regulator-fixed definitions to label a golden set against** — while leaving the extraction work as real work. The gap between "the SEC requires this disclosed" and "nobody tagged it" is precisely the gap a terminal subscription is currently charging to close.
 
 ## The metrics
@@ -176,17 +192,35 @@ The artifact that proves the thesis:
 
 If the citations do not survive spot-checking, nothing downstream matters.
 
+## Running it
+
+The SEC requires a declared `User-Agent`; the client refuses to make a request without one rather than sending a default.
+
+```bash
+uv venv && uv pip install -e ".[dev]"
+export BASIN_SEC_USER_AGENT="Basin research (you@example.com)"
+
+# Which concepts does a filer actually tag, under which taxonomy, and how recently?
+python scripts/coverage_report.py --all-concepts --cik 1090012 --cik 1539838
+
+# Ingest XBRL facts into the store (idempotent per accession)
+python scripts/ingest_xbrl.py --cik 1090012 --cik 1539838
+
+pytest
+```
+
 ## Roadmap
+
+### Done
+
+- [x] **`xbrl_facts`** — rate-limited EDGAR client, concept registry with `srt:` / `us-gaap:` aliasing, typed fact rows, and a per-company coverage report scoring currency as well as presence
+- [x] **Fact store schema** — `(concept, value, unit, period, accession, form, extracted_by, source_span)`, append-only, with a `fact_current` view for reads. An LLM-sourced row without a source span is rejected by a `CHECK` constraint rather than by review.
 
 ### Next
 
-- [ ] Lock the company cohort — filter the 86 to real E&P operators, select 20 across basins
-- [ ] Finalize the KPI schema and write the fact store DDL
-
-### First two commits
-
-- [ ] **`xbrl_facts`** — client over `data.sec.gov/api/xbrl/companyfacts/CIK##########.json` and `companyconcept/…`, with the `srt:` / `us-gaap:` namespace aliasing the sampling showed is required, plus a per-company coverage report
-- [ ] **Fact store schema** — `(concept, value, unit, period, accession, form, extracted_by, source_span)`, append-only and versioned. This is the spine everything else hangs from.
+- [ ] Run the coverage report across all 86 SIC-1311 filers, then lock the cohort — filter to real E&P operators and select 20 across basins, weighted by measured XBRL coverage
+- [ ] Filing watcher over EDGAR submissions, so new 10-Ks and 8-Ks trigger ingest
+- [ ] Golden set: hand-label the 8 fields × 20 companies × recent periods, starting with the fields XBRL does not cover
 
 ### Deferred
 
