@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
 
 from basin.edgar.client import SEC_DATA_HOST, EdgarClient, NotFound, cik_padded
-from basin.facts.concepts import ALL_CONCEPTS, ConceptSpec
+from basin.facts.concepts import ALL_CONCEPTS, ConceptSpec, product_for_unit
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,21 @@ class FactRow:
     accession: str
     form: str
     filed: str
+
+    product: str | None = None
+    """oil / gas / NGL, where the unit identifies it; None when ambiguous.
+
+    Part of the cell's identity, not a label on it: an oil realized price and
+    a gas realized price are two different facts that happen to share a
+    concept, so they occupy separate rows rather than competing for one cell.
+    """
+
+    unit_rank: int = 0
+    """Where this unit sits in the concept's preference order.
+
+    Stored rather than recomputed at read time so the panel view can break
+    same-quantity-two-units ties in SQL, deterministically.
+    """
 
     frame: str | None = None
     """SEC's calendar-aligned frame key, when it assigned one."""
@@ -136,6 +151,8 @@ def rows_for_concept(
                     tag=tag,
                     value=float(obs["val"]),
                     unit=unit,
+                    product=product_for_unit(unit),
+                    unit_rank=concept.unit_rank(unit),
                     period_start=obs.get("start"),
                     period_end=obs["end"],
                     fiscal_year=obs.get("fy"),
@@ -147,7 +164,9 @@ def rows_for_concept(
                 )
             )
 
-    rows.sort(key=lambda r: (r.period_end, r.filed, r.accession))
+    rows.sort(
+        key=lambda r: (r.period_end, r.product or "", r.unit_rank, r.filed, r.accession)
+    )
     return rows
 
 

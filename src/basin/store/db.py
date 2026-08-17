@@ -97,11 +97,11 @@ def insert_facts(conn: sqlite3.Connection, rows: Iterable[FactRow]) -> int:
         cursor = conn.execute(
             """
             INSERT INTO fact (
-                cik, concept_key, value, unit,
+                cik, concept_key, value, unit, product, unit_rank,
                 period_start, period_end, fiscal_year, fiscal_period,
                 accession, form, extracted_by, taxonomy, tag
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -109,6 +109,8 @@ def insert_facts(conn: sqlite3.Connection, rows: Iterable[FactRow]) -> int:
                 row.concept_key,
                 row.value,
                 row.unit,
+                row.product,
+                row.unit_rank,
                 row.period_start,
                 row.period_end,
                 row.fiscal_year,

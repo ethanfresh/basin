@@ -16,7 +16,7 @@ than assume it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -32,10 +32,65 @@ class ConceptSpec:
     aliases: tuple[tuple[str, str], ...]
     """``(taxonomy, tag)`` pairs, tried in order of expected reliability."""
 
-    expected_units: tuple[str, ...] = ()
-    """Unit keys as ``companyfacts`` spells them. Empty means "accept any"."""
+    preferred_units: tuple[str, ...] = ()
+    """Unit keys as ``companyfacts`` spells them, best first.
+
+    Order is load-bearing, not documentation. A filer can tag the same
+    quantity twice in different units -- Devon reports proved reserves as both
+    MMBoe and MMcfe -- and both rows are legitimately storable. Something has
+    to decide which one reaches the cell, and an arbitrary choice would make
+    the panel non-reproducible. Empty means "accept any"; unlisted units sort
+    after listed ones.
+    """
 
     notes: str = ""
+
+    def unit_rank(self, unit: str) -> int:
+        """Position of *unit* in the preference order; unlisted units last."""
+        try:
+            return self.preferred_units.index(unit)
+        except ValueError:
+            return len(self.preferred_units)
+
+
+# --- Product dimension -----------------------------------------------------
+#
+# XBRL tags these disclosures with a product axis (oil / gas / NGL), but the
+# companyfacts API flattens dimensions away, so the axis member never arrives.
+# What survives is the unit, and for some units that is enough to recover the
+# product: a price in USD/bbl is an oil price, one in USD/Mcf is a gas price.
+#
+# Where the unit does NOT identify the product -- MBoe, MMBbls and friends can
+# all mean barrels-of-oil-equivalent for the whole company -- product stays
+# None rather than being guessed. A wrong product label is worse than a
+# missing one: it silently mislabels a cell instead of leaving it visibly
+# undimensioned.
+
+_PRODUCT_BY_UNIT: dict[str, str] = {
+    # Liquids prices
+    "USD/bbl": "oil",
+    "USD/Bbl": "oil",
+    "USD/bbls": "oil",
+    # Gas prices
+    "USD/Mcf": "gas",
+    "USD/MMBTU": "gas",
+    "USD/MMBtu": "gas",
+    "USD/Mmbtu": "gas",
+    "USD/MMcf": "gas",
+    # Gas volumes
+    "Bcf": "gas",
+    "MMcf": "gas",
+    "Mcf": "gas",
+}
+
+
+def product_for_unit(unit: str) -> str | None:
+    """Recover the product dimension from a unit, or None if it is ambiguous.
+
+    BOE-style units are deliberately absent: they aggregate products, so
+    labelling one 'oil' would be a fabrication.
+    """
+    return _PRODUCT_BY_UNIT.get(unit)
 
 
 # --- Facts layer: taken from XBRL, exact, no language model involved --------
@@ -48,7 +103,7 @@ RESERVES_DEVELOPED = ConceptSpec(
         ("srt", "ProvedDevelopedReservesVolume"),
         ("us-gaap", "ProvedDevelopedReservesBOE1"),
     ),
-    expected_units=("boe", "bbl", "MBoe", "MMBoe"),
+    preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
 )
 
 RESERVES_UNDEVELOPED = ConceptSpec(
@@ -59,7 +114,7 @@ RESERVES_UNDEVELOPED = ConceptSpec(
         ("srt", "ProvedUndevelopedReservesVolume"),
         ("us-gaap", "ProvedUndevelopedReserveBOE"),
     ),
-    expected_units=("boe", "bbl", "MBoe", "MMBoe"),
+    preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
 )
 
 RESERVES_TOTAL_PROVED = ConceptSpec(
@@ -70,7 +125,7 @@ RESERVES_TOTAL_PROVED = ConceptSpec(
         ("srt", "ProvedDevelopedAndUndevelopedReserveNetEnergy"),
         ("us-gaap", "ProvedDevelopedAndUndevelopedReservesNet"),
     ),
-    expected_units=("boe", "bbl", "MBoe", "MMBoe"),
+    preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
 )
 
 STANDARDIZED_MEASURE = ConceptSpec(
@@ -86,7 +141,7 @@ STANDARDIZED_MEASURE = ConceptSpec(
             "StandardizedMeasureOfDiscountedFutureNetCashFlowsRelatingToProvedOilAndGasReserves",
         ),
     ),
-    expected_units=("USD",),
+    preferred_units=("USD",),
     notes="PV-10 is a non-GAAP cousin of this and is usually untagged.",
 )
 
@@ -98,7 +153,7 @@ PRODUCTION_VOLUME = ConceptSpec(
         ("srt", "ProvedDevelopedAndUndevelopedReserveProduction"),
         ("us-gaap", "ProvedDevelopedAndUndevelopedReserveProductionEnergy"),
     ),
-    expected_units=("boe", "bbl", "MBoe", "MMBoe"),
+    preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
     notes="Reported as the production line of the reserve rollforward.",
 )
 
@@ -110,7 +165,7 @@ OIL_AND_GAS_REVENUE = ConceptSpec(
         ("us-gaap", "OilAndGasSalesRevenue"),
         ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
     ),
-    expected_units=("USD",),
+    preferred_units=("USD",),
     notes="The contract-with-customer tag is last on purpose: it is total "
     "revenue, not oil and gas revenue, so it is a fallback and the basis "
     "difference must reach the cell.",
@@ -124,7 +179,7 @@ CAPEX = ConceptSpec(
         ("us-gaap", "PaymentsToExploreAndDevelopOilAndGasProperties"),
         ("us-gaap", "PaymentsToAcquirePropertyPlantAndEquipment"),
     ),
-    expected_units=("USD",),
+    preferred_units=("USD",),
     notes="Guided capex is not tagged anywhere; it comes from 8-K EX-99.1.",
 )
 
@@ -142,6 +197,10 @@ AVERAGE_SALES_PRICE = ConceptSpec(
         ("srt", "AverageSalePricePerUnitOfProduction"),
         ("us-gaap", "AverageSalesPrices"),
     ),
+    # Ranking only breaks ties *within* a product, since product partitions the
+    # cell: a gas price tagged in both USD/Mcf and USD/MMBTU resolves to Mcf,
+    # which is how realized gas prices are conventionally quoted.
+    preferred_units=("USD/bbl", "USD/Bbl", "USD/Mcf", "USD/MMBTU", "USD/MMBtu"),
     notes="Sampled at 2/10. Regulation S-K 1200 requires the disclosure; "
     "most filers leave it untagged. Extraction layer owns this field.",
 )

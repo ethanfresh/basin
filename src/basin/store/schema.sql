@@ -54,6 +54,21 @@ CREATE TABLE IF NOT EXISTS fact (
     value         REAL NOT NULL,
     unit          TEXT NOT NULL,
 
+    -- The product axis (oil / gas / NGL). XBRL dimensions it; the companyfacts
+    -- API flattens the axis away, so it is recovered from the unit where the
+    -- unit is unambiguous and left NULL where it is not.
+    --
+    -- This is part of the cell's identity, not decoration. Without it, a
+    -- filer's oil realized price and gas realized price collide on one cell
+    -- and whichever wins is arbitrary.
+    product       TEXT,
+
+    -- Position of `unit` in the concept's preference order. A filer may tag
+    -- the same quantity in two units (proved reserves as MMBoe AND MMcfe);
+    -- both rows are legitimate, and this is what lets the panel pick one
+    -- reproducibly instead of by insertion order.
+    unit_rank     INTEGER NOT NULL DEFAULT 0,
+
     period_start  TEXT,                      -- NULL for point-in-time facts
     period_end    TEXT NOT NULL,
     fiscal_year   INTEGER,
@@ -90,8 +105,8 @@ CREATE TABLE IF NOT EXISTS fact (
 -- deduplicating exactly the rows the panel is built from. COALESCE keeps the
 -- comparison total, and is spelled the same way in Postgres.
 CREATE UNIQUE INDEX IF NOT EXISTS fact_identity_idx ON fact (
-    cik, concept_key, period_end, COALESCE(period_start, ''),
-    unit, accession, extracted_by
+    cik, concept_key, COALESCE(product, ''), period_end,
+    COALESCE(period_start, ''), unit, accession, extracted_by
 );
 
 CREATE INDEX IF NOT EXISTS fact_panel_idx
@@ -100,22 +115,77 @@ CREATE INDEX IF NOT EXISTS fact_company_idx
     ON fact (cik, concept_key, period_end DESC);
 
 
--- The current view of the panel: for each (company, concept, period), the row
--- from the most recently filed accession. History stays in `fact`; this is
--- only how the table is read.
+-- The current view of the panel: exactly one row per cell, where a cell is
+-- (company, concept, product, period). History stays in `fact`; this is only
+-- how the table is read.
+--
+-- The ordering inside the window is the whole point, and every term earns its
+-- place:
+--   filed_date DESC  -- a restatement supersedes the value it restates
+--   unit_rank ASC    -- same quantity tagged in two units: prefer the canonical
+--   id DESC          -- total order, so the result never depends on scan order
+--
+-- Product is in the PARTITION, not the ORDER: oil and gas prices are different
+-- cells, so both survive rather than one evicting the other.
 CREATE VIEW IF NOT EXISTS fact_current AS
-SELECT f.*
+SELECT cik, concept_key, value, unit, product, unit_rank,
+       period_start, period_end, fiscal_year, fiscal_period,
+       accession, form, extracted_by, taxonomy, tag, section, source_span,
+       basis_note, is_hedged, ingested_at, id
+FROM (
+    SELECT f.*,
+           ROW_NUMBER() OVER (
+               PARTITION BY f.cik, f.concept_key, COALESCE(f.product, ''),
+                            f.period_end, COALESCE(f.period_start, '')
+               ORDER BY fl.filed_date DESC, f.unit_rank ASC, f.id DESC
+           ) AS rn
+    FROM fact f
+    JOIN filing fl ON fl.accession = f.accession
+)
+WHERE rn = 1;
+
+
+-- Cells where the winning row beat a *materially different* value from an
+-- equally recent filing. These are the cases where picking a winner is a
+-- judgement rather than a restatement, so they are surfaced instead of
+-- silently resolved -- a quietly mixed cell is the failure mode that loses an
+-- account.
+CREATE VIEW IF NOT EXISTS fact_collision AS
+SELECT f.cik, f.concept_key, COALESCE(f.product, '') AS product,
+       f.period_end,
+       COUNT(DISTINCT f.value) AS distinct_values,
+       COUNT(DISTINCT f.unit)  AS distinct_units,
+       MIN(f.value) AS min_value,
+       MAX(f.value) AS max_value,
+       GROUP_CONCAT(DISTINCT f.unit) AS units
 FROM fact f
 JOIN filing fl ON fl.accession = f.accession
-WHERE fl.filed_date = (
-    SELECT MAX(fl2.filed_date)
-    FROM fact f2
-    JOIN filing fl2 ON fl2.accession = f2.accession
-    WHERE f2.cik = f.cik
-      AND f2.concept_key = f.concept_key
-      AND f2.period_end = f.period_end
-      AND COALESCE(f2.period_start, '') = COALESCE(f.period_start, '')
-);
+GROUP BY f.cik, f.concept_key, COALESCE(f.product, ''), f.period_end,
+         COALESCE(f.period_start, ''), fl.filed_date
+HAVING COUNT(DISTINCT f.value) > 1;
+
+
+-- Series where a filer changed the declared unit partway through.
+--
+-- The panel's unit_rank tie-break assumes competing units are interchangeable
+-- labels for one quantity. Sometimes they are not. Devon tags total proved
+-- reserves as MMBoe through FY2022 and MMcfe from FY2023, while the values
+-- stay continuous (2182 -> 1817 -> 2155); a real BOE-to-cfe change would move
+-- the figure about sixfold, so the later unit label is simply wrong.
+--
+-- Basin does not rewrite a filer's unit -- inventing a corrected label is the
+-- one thing worse than reporting the filer's own. It reports the
+-- discontinuity so the cell can carry the caveat, which is the same rule the
+-- README applies to definition mismatch.
+CREATE VIEW IF NOT EXISTS unit_discontinuity AS
+SELECT cik, concept_key, COALESCE(product, '') AS product,
+       COUNT(DISTINCT unit) AS distinct_units,
+       GROUP_CONCAT(DISTINCT unit) AS units,
+       MIN(period_end) AS first_period,
+       MAX(period_end) AS last_period
+FROM fact
+GROUP BY cik, concept_key, COALESCE(product, '')
+HAVING COUNT(DISTINCT unit) > 1;
 
 
 -- Coverage snapshots, so "which concepts does this filer tag" is measured over

@@ -109,21 +109,39 @@ Two of the ten sampled companies expose essentially no reserve concepts at all. 
 
 The pattern is unfavorable in a specific way: the **per-unit economics** — realized price per barrel, production cost per barrel — are the most commercially valuable figures and the least reliably tagged.
 
-#### Re-verified after building the client
+#### Measured across the whole population
 
-Running the coverage report over nine producers confirmed the sampling above and sharpened it in two ways:
+The sampling above was ten companies. The client now measures all of them. Re-running the filer census reproduces the original figures — **1,380 CIKs** have ever filed a 10-K under SIC 1311, **2** have a foreign business address, and **8-K coverage is universal (100/100)**, confirming that 8-K exhibit ingestion is a hard prerequisite.
 
-- **Tagged is not the same as current.** Several filers tag a concept and then stop. EOG's reserve concepts end at FY2021; Matador's at FY2012; Murphy's total proved at FY2018. Counting "ever tagged" overstates usable coverage by roughly a third, so the coverage report scores currency separately.
-- **Some large filers tag no reserve data at all.** ConocoPhillips and Occidental expose no reserve, production, or standardized-measure concepts in any taxonomy — ConocoPhillips's entire `srt` namespace is two tags, and Occidental has no `srt` namespace. This is absence, not inconsistency, and it means cohort selection has to be driven by measured coverage rather than by company size.
+| Measure | Count |
+|---|---|
+| CIKs that have ever filed a 10-K | 1,380 |
+| Filed a 10-K since January 2025 | 101 |
+| Distinct issuers after collapsing successor CIKs | **100** |
+| Of those, currently ticker-listed | 86 |
+| Of those, with a foreign business address | 2 |
+| Of those, that also file 8-Ks | 100 |
+
+Coverage of the six Facts-layer concepts, across all 100 issuers:
 
 | Concept | Current (period ≥ 2023) | Ever tagged |
 |---|---|---|
-| Proved developed reserves | 4 / 9 | 5 / 9 |
-| Standardized measure | 4 / 9 | 6 / 9 |
-| Capex | 4 / 9 | 6 / 9 |
-| Production volume | 2 / 9 | 2 / 9 |
-| Average realized price | 1 / 9 | 2 / 9 |
-| Production cost per BOE | 0 / 9 | 1 / 9 |
+| Capex | 49 / 100 | 69 / 100 |
+| Standardized measure | 48 / 100 | 61 / 100 |
+| Proved developed reserves | 31 / 100 | 39 / 100 |
+| Total proved reserves | 31 / 100 | 41 / 100 |
+| Oil & gas revenue | 24 / 100 | 64 / 100 |
+| Production volume | 23 / 100 | 28 / 100 |
+| **Average realized price** | **2 / 100** | 8 / 100 |
+| **Production cost per BOE** | **0 / 100** | 2 / 100 |
+
+Three findings that change how the cohort gets picked:
+
+- **Tagged is not the same as current.** Filers tag a concept and then stop. EOG's reserve concepts end at FY2021; Matador's at FY2012; Murphy's total proved at FY2018. Counting "ever tagged" overstates usable coverage by about a third across the population, so currency is scored separately.
+- **Some of the largest producers tag no reserve data at all.** ConocoPhillips's entire `srt` namespace is two tags; Occidental has no `srt` namespace. This is absence, not inconsistency — company size is anti-correlated with XBRL completeness often enough that the cohort cannot be picked by market cap.
+- **Ranking by coverage alone selects the wrong companies.** All five issuers with a perfect 6/6 are royalty, minerals, or partnership vehicles — Black Stone Minerals, Sitio Royalties, TXO Partners — not operators. They tag cleanly because their disclosures are simpler, which is exactly why they are not the product. The operator filter has to come before the coverage ranking, not after.
+
+At the population level the per-unit economics gap is no longer merely unfavourable, it is close to total: **realized price is current for 2 filers in 100, and production cost per BOE for none.** Both are mandated disclosures under Regulation S-K Subpart 1200. The entire commercial value of those two fields sits behind document extraction, which is the clearest possible statement of where the work is.
 
 **This narrows the free path without undermining the thesis.** SEC Regulation S-K Subpart 1200 and ASC 932 require these disclosures to appear in every 10-K, in defined terms. The data is unambiguously present in the documents; it is simply not always machine-readable. That yields the thing the architecture actually depends on — **regulator-fixed definitions to label a golden set against** — while leaving the extraction work as real work. The gap between "the SEC requires this disclosed" and "nobody tagged it" is precisely the gap a terminal subscription is currently charging to close.
 
@@ -181,6 +199,13 @@ Two producers can both report "production cost per barrel" and mean materially d
 
 **Design decision: definition mismatch is a first-class field on the cell, not a footnote.** A table that says "these four report on a different basis, and here is the difference" is trustworthy. A visually clean table that quietly mixes bases is the thing that loses an account.
 
+The first live instance of this turned up in the Facts layer, before any language model was involved:
+
+- **Products collide inside one concept.** XBRL dimensions realized price by product, but the `companyfacts` API flattens the dimension away. Matador's oil and gas prices arrived as two values on one concept, distinguishable only by unit (`USD/bbl` vs `USD/MMBTU`). Product is therefore part of a cell's identity — oil price and gas price are separate rows, not competitors for one cell.
+- **A filer's own unit label can be wrong.** Devon tags total proved reserves as `MMBoe` through FY2022 and `MMcfe` from FY2023, while the values run continuously (2182 → 1817 → 2155). A genuine BOE-to-cfe change would move the figure roughly sixfold; their *developed* reserves stay in `MMBoe` at a comparable magnitude in the same filings. The later unit label is simply incorrect.
+
+Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, so the caveat can travel with the cell.
+
 ## Scope of the first version
 
 **One vertical, ~20 companies, 8 metrics, 8 quarters of history.** Go all the way through every layer before adding a single additional company.
@@ -200,6 +225,9 @@ The SEC requires a declared `User-Agent`; the client refuses to make a request w
 uv venv && uv pip install -e ".[dev]"
 export BASIN_SEC_USER_AGENT="Basin research (you@example.com)"
 
+# Enumerate the SIC-1311 population and profile every filer (results cached)
+python scripts/discover_cohort.py --out data/cohort_candidates.csv
+
 # Which concepts does a filer actually tag, under which taxonomy, and how recently?
 python scripts/coverage_report.py --all-concepts --cik 1090012 --cik 1539838
 
@@ -218,7 +246,8 @@ pytest
 
 ### Next
 
-- [ ] Run the coverage report across all 86 SIC-1311 filers, then lock the cohort — filter to real E&P operators and select 20 across basins, weighted by measured XBRL coverage
+- [x] Run the coverage report across the full SIC-1311 population — 1,380 CIKs enumerated, 100 distinct current issuers profiled and scored
+- [ ] Lock the cohort — filter the 100 to real E&P operators (the coverage ranking alone selects royalty vehicles), then select 20 across basins
 - [ ] Filing watcher over EDGAR submissions, so new 10-Ks and 8-Ks trigger ingest
 - [ ] Golden set: hand-label the 8 fields × 20 companies × recent periods, starting with the fields XBRL does not cover
 

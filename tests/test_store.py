@@ -112,3 +112,98 @@ class TestCurrentView:
         assert len(rows) == 1
         assert rows[0]["value"] == 1200.0
         assert rows[0]["accession"] == "0001090012-25-000010"
+
+
+class TestProductIsPartOfTheCell:
+    """Oil and gas facts share a concept but are not the same cell."""
+
+    def test_products_coexist_rather_than_evicting_each_other(self, conn):
+        insert_facts(
+            conn,
+            [
+                _row(
+                    concept_key="average_sales_price",
+                    value=76.5,
+                    unit="USD/bbl",
+                    product="oil",
+                ),
+                _row(
+                    concept_key="average_sales_price",
+                    value=2.35,
+                    unit="USD/MMBTU",
+                    product="gas",
+                ),
+            ],
+        )
+        rows = conn.execute(
+            """SELECT product, value FROM fact_current
+               WHERE concept_key='average_sales_price' ORDER BY product"""
+        ).fetchall()
+        assert [(r["product"], r["value"]) for r in rows] == [
+            ("gas", 2.35),
+            ("oil", 76.5),
+        ]
+
+    def test_same_quantity_two_units_resolves_by_unit_rank(self, conn):
+        # Devon tags proved reserves as both MMBoe and MMcfe. Both are stored;
+        # the canonical unit is the one that reaches the cell.
+        insert_facts(
+            conn,
+            [
+                _row(concept_key="proved_reserves_boe", value=1200.0,
+                     unit="MMBoe", unit_rank=0),
+                _row(concept_key="proved_reserves_boe", value=7200.0,
+                     unit="MMcfe", unit_rank=7),
+            ],
+        )
+        rows = conn.execute(
+            "SELECT unit, value FROM fact_current WHERE concept_key='proved_reserves_boe'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["unit"] == "MMBoe"
+
+    def test_restatement_still_wins_over_unit_rank(self, conn):
+        # Filing recency outranks unit preference: a newer filing's value is
+        # the current one even if an older filing used the canonical unit.
+        insert_facts(
+            conn,
+            [
+                _row(concept_key="proved_reserves_boe", value=1100.0, unit="MMBoe",
+                     unit_rank=0, accession="0001090012-24-000010"),
+                _row(concept_key="proved_reserves_boe", value=7200.0, unit="MMcfe",
+                     unit_rank=7, accession="0001090012-25-000010"),
+            ],
+        )
+        rows = conn.execute(
+            "SELECT unit, value FROM fact_current WHERE concept_key='proved_reserves_boe'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["value"] == 7200.0
+
+    def test_one_row_per_cell(self, conn, companyfacts):
+        from basin.facts import concepts
+        from basin.facts.xbrl import rows_for_concept
+
+        insert_facts(conn, rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED))
+        dupes = conn.execute(
+            """SELECT COUNT(*) FROM (
+                   SELECT 1 FROM fact_current
+                   GROUP BY cik, concept_key, COALESCE(product,''), period_end,
+                            COALESCE(period_start,'')
+                   HAVING COUNT(*) > 1)"""
+        ).fetchone()[0]
+        assert dupes == 0
+
+
+class TestCollisionsAreSurfaced:
+    def test_conflicting_values_in_one_filing_are_reported(self, conn):
+        insert_facts(
+            conn,
+            [
+                _row(concept_key="capex", value=3_500_000_000.0, unit="USD"),
+                _row(concept_key="capex", value=3_900_000_000.0, unit="USD",
+                     period_start="2024-01-01"),
+            ],
+        )
+        # Different period_start makes these different cells, not a collision.
+        assert conn.execute("SELECT COUNT(*) FROM fact_collision").fetchone()[0] == 0

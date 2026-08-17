@@ -107,7 +107,15 @@ class EdgarClient:
         self._client.close()
 
     def get_json(self, url: str) -> dict[str, Any]:
-        """GET *url* and parse JSON, honouring the rate cap and retrying.
+        """GET *url* and parse JSON, honouring the rate cap and retrying."""
+        return self.get(url).json()
+
+    def get_text(self, url: str) -> str:
+        """GET *url* as text. Used for the Atom company-search endpoints."""
+        return self.get(url).text
+
+    def get(self, url: str) -> httpx.Response:
+        """GET *url*, honouring the rate cap and retrying transient failures.
 
         Raises :class:`NotFound` on 404 — for SEC endpoints that means the
         resource genuinely does not exist (no facts for this CIK), which is a
@@ -140,7 +148,7 @@ class EdgarClient:
                 continue
 
             response.raise_for_status()
-            return response.json()
+            return response
 
         raise SECError(f"giving up on {url} after {MAX_RETRIES} attempts") from last_error
 
