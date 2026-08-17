@@ -1,0 +1,209 @@
+# Basin
+
+**Peer-comparable financial data for US oil & gas producers, extracted from SEC filings, with a citation behind every number.**
+
+Basin builds and maintains a structured dataset of the operating metrics that matter for exploration & production companies — reserves, production, realized prices, per-barrel costs, capex, and management guidance — pulled directly from SEC filings as they are published. Every value in the dataset carries the accession number, section, fiscal period, and verbatim source text it came from, so any number can be spot-checked against the original document in one click.
+
+It is built for people who need this data and cannot justify an enterprise terminal seat: smaller investment firms, lenders, consultants, corporate development teams, and accounting firms.
+
+> **Status: pre-implementation.** No code has been written yet. The vertical is chosen and the filer population and data availability have been verified against live SEC APIs (see [Feasibility](#feasibility-verified-against-live-sec-data)). The repository currently contains this README and the session handoff document that established the direction.
+>
+> *The name `Basin` is a working title — chosen because it is vertical-specific and avoids the collision with the unrelated "FinAgent" system from Zhang et al., KDD '24.*
+
+---
+
+## Table of contents
+
+- [The problem](#the-problem)
+- [What Basin does](#what-basin-does)
+- [Background: how SEC filings work](#background-how-sec-filings-work)
+- [Why one industry](#why-one-industry)
+- [Feasibility: verified against live SEC data](#feasibility-verified-against-live-sec-data)
+- [The metrics](#the-metrics)
+- [Architecture](#architecture)
+- [Comparability](#comparability-the-core-claim-and-the-core-liability)
+- [Scope of the first version](#scope-of-the-first-version)
+- [Roadmap](#roadmap)
+- [Working principles](#working-principles)
+
+---
+
+## The problem
+
+Every US public company is legally required to file detailed reports with the SEC. Those reports are free and public, in a database called EDGAR. Everything an investor is entitled to know is in there.
+
+The difficulty is that it is buried in hundreds of pages of prose and tables, in formats designed for reading rather than for analysis. Comparing forty companies means a person reading forty documents and typing numbers into a spreadsheet — then doing it again next quarter.
+
+Tools that solve this exist. They cost tens of thousands of dollars per seat per year, and they are priced and sold for large institutions.
+
+## What Basin does
+
+Basin narrows the problem to one industry and solves it completely for that industry.
+
+- **Peer comparison tables** — 20+ producers side by side on the same metrics, for the same periods.
+- **"What changed" reports** — the newest filing diffed against the prior one, with material changes surfaced and explained.
+- **Alerts** — when guidance moves, when a cost metric shifts, when management changes how it defines or reports something.
+- **Excel export** — with citations preserved, because the output has to survive being forwarded to someone skeptical.
+
+The design constraint that governs everything: **retrieval is a recall mechanism, not a precision mechanism.** Similarity search is good at finding the paragraph that probably discusses a topic. It is not good enough to populate a spreadsheet cell. Anything destined for a cell comes from a typed extraction carrying a source span that has been verified to appear verbatim in the cited document.
+
+## Background: how SEC filings work
+
+For readers new to this domain:
+
+| Filing | What it is |
+|---|---|
+| **10-K** | The annual report. Comprehensive, hundreds of pages, audited. |
+| **10-Q** | The quarterly version. Shorter, unaudited. |
+| **8-K** | A "material event just happened" announcement, filed as needed. Quarterly earnings releases arrive as an attachment to one of these, labeled EX-99.1. |
+
+Alongside the human-readable filing, companies also submit the same figures as **XBRL** — a structured, machine-readable representation where each number carries a standard label, a unit, and a fiscal period. The SEC exposes this through free APIs with no key required, notably `companyfacts`.
+
+XBRL matters enormously here. A number read from XBRL is exact, comes with its originating accession number, and involves no language model at all — which structurally eliminates the possibility of a fabricated figure. Basin takes everything it can from XBRL, and only falls back to document extraction for what XBRL does not cover.
+
+## Why one industry
+
+This is a technical constraint before it is a go-to-market decision.
+
+Open-ended extraction — "pull any metric from any company" — has no ground truth. It cannot be measured, so it cannot be improved, and a customer has no basis on which to trust it.
+
+Fixing the industry and the metric set converts the problem into a closed one: **N known companies × K known fields × known periods.** That grid can be labeled by hand, once. A hand-labeled answer key makes per-field precision and recall measurable, which makes regression testing in CI possible, which makes the system improvable and its accuracy claims verifiable.
+
+The evaluation harness is not overhead around the product. It is the product's core asset.
+
+## Feasibility: verified against live SEC data
+
+Two questions were checked against the live SEC APIs before committing to oil & gas.
+
+### 1. Is the filer population large enough, and is it actually on EDGAR?
+
+This is what disqualified the originally-considered vertical, copper: most copper producers are Canadian and file with Canadian regulators, not the SEC. A product promising sector coverage would silently miss much of the sector.
+
+Oil & gas has no such gap. Querying EDGAR for SIC code 1311 (crude petroleum & natural gas):
+
+| Measure | Count |
+|---|---|
+| CIKs that have ever filed a 10-K | 1,380 |
+| Currently listed with a ticker | 115 |
+| **Filed a 10-K since January 2025** | **86** |
+| Of those, with a foreign business address | **2** |
+| Of those, that also file 8-Ks | **86** |
+
+Universal 8-K coverage matters because production and capex guidance is announced in earnings releases, not annual reports — so 8-K exhibit ingestion is a hard prerequisite rather than a later enhancement.
+
+The 86 includes royalty trusts, minerals companies, midstream, refiners, oilfield services misclassified into the SIC, and a small amount of noise — a biotechnology company is currently filed under this code. **Actual E&P operators number roughly 40–45**, which is ample for a 20-company first version with real basin cohorts inside it.
+
+### 2. Are the key metrics already tagged in XBRL?
+
+Partially, and inconsistently. Sampling ten major E&Ps for the relevant reserve and cost concepts:
+
+| Concept | Filers tagging it |
+|---|---|
+| `srt:ProvedDevelopedReservesBOE1` | 6 / 10 |
+| `srt:StandardizedMeasureOfDiscountedFutureNetCashFlows…` | 6 / 10 |
+| `srt:ProvedDevelopedAndUndevelopedReserveProductionEnergy` | 5 / 10 |
+| `srt:AverageSalesPrices` | **2 / 10** |
+| `srt:ConsolidatedOilAndGasProductionCostsPerUnitOfProduction` | **1 / 10** |
+
+Two of the ten sampled companies expose essentially no reserve concepts at all. One tags the `us-gaap:` variants rather than the `srt:` ones, so the ingest client needs namespace aliasing rather than a flat concept list.
+
+The pattern is unfavorable in a specific way: the **per-unit economics** — realized price per barrel, production cost per barrel — are the most commercially valuable figures and the least reliably tagged.
+
+**This narrows the free path without undermining the thesis.** SEC Regulation S-K Subpart 1200 and ASC 932 require these disclosures to appear in every 10-K, in defined terms. The data is unambiguously present in the documents; it is simply not always machine-readable. That yields the thing the architecture actually depends on — **regulator-fixed definitions to label a golden set against** — while leaving the extraction work as real work. The gap between "the SEC requires this disclosed" and "nobody tagged it" is precisely the gap a terminal subscription is currently charging to close.
+
+## The metrics
+
+Eight fields for the first version, grouped by which layer produces them, because the layer determines how each is evaluated.
+
+### Facts layer — XBRL, exact match
+
+| Field | Plain meaning |
+|---|---|
+| Proved reserves (developed / undeveloped, by product) | Oil and gas confirmed to be in the ground and profitably extractable |
+| Standardized measure / PV-10 | The SEC's standardized present-value estimate of those reserves |
+| Annual production volumes by product | How much was actually produced |
+
+### Extraction layer — schema-constrained LLM, mandatory source span
+
+| Field | Plain meaning |
+|---|---|
+| Average realized price per unit | What the company was actually paid per barrel or Mcf — reported both before and after hedging |
+| Production cost (LOE) per BOE | Cost to lift one barrel out of the ground; realized price minus this is roughly the unit margin |
+| Cash G&A per BOE | Corporate overhead allocated per barrel |
+| Capex, actual and guided | Spending on new drilling |
+| Production guidance range | Management's own forecast for the coming period — **sourced from 8-K EX-99.1, not the 10-K** |
+
+### Derivation layer — pure Python, unit tested
+
+Reserve life (R/P ratio), reserve replacement ratio, finding & development cost per BOE, unit margin per BOE.
+
+*BOE — "barrel of oil equivalent" — is the industry's common unit for adding oil and natural gas volumes into a single figure.*
+
+## Architecture
+
+Basin is a **pipeline, not an agent.** "Alert me when guidance changes" cannot be answered at request time. The system maintains a panel dataset — companies × metrics × periods — that rebuilds itself as filings arrive. A language model appears in exactly two places: as a schema-constrained extractor at ingest, and as an explainer at read time. Chat is one surface over the table, not the system itself.
+
+| Layer | Mechanism | How it is evaluated |
+|---|---|---|
+| **Watch** | EDGAR daily index / submissions polling → filing events | liveness |
+| **Facts** | XBRL `companyfacts` → typed fact rows | exact match |
+| **Extraction** | Per-vertical KPI schema; LLM constrained to schema; mandatory source span | labeled golden set, per-field P/R |
+| **Derivation** | Pure Python — growth, ratios, unit normalization | unit tests |
+| **Change detection** | Diff facts, extractions, and narrative sections against prior, with materiality thresholds | precision on alerts |
+| **Delivery** | Tables, Excel export, alerts, chat | LLM judge |
+
+Two consequences worth stating explicitly:
+
+- **The system of record is relational, not a vector store.** Facts are typed rows with provenance, append-only and versioned by accession number. Restatements and 10-K/A amendments must not silently overwrite the history that citations depend on. Vector search serves the narrative layer only.
+- **False alerts are the failure mode that kills trust.** Change detection is evaluated on precision, not recall. An alert that turns out to be a rounding artifact costs more than a missed one.
+
+## Comparability: the core claim and the core liability
+
+Putting forty companies in one table asserts that the rows are comparable. Frequently they are not.
+
+Two producers can both report "production cost per barrel" and mean materially different things — one including gathering and transportation charges, the other reporting them below that line. The same applies to realized prices quoted before versus after hedging.
+
+**Design decision: definition mismatch is a first-class field on the cell, not a footnote.** A table that says "these four report on a different basis, and here is the difference" is trustworthy. A visually clean table that quietly mixes bases is the thing that loses an account.
+
+## Scope of the first version
+
+**One vertical, ~20 companies, 8 metrics, 8 quarters of history.** Go all the way through every layer before adding a single additional company.
+
+The artifact that proves the thesis:
+
+1. One peer comparison table in which **every cell links to its exact accession, section, period, and quoted source text.**
+2. One "what changed this quarter" report generated from the same store.
+
+If the citations do not survive spot-checking, nothing downstream matters.
+
+## Roadmap
+
+### Next
+
+- [ ] Lock the company cohort — filter the 86 to real E&P operators, select 20 across basins
+- [ ] Finalize the KPI schema and write the fact store DDL
+
+### First two commits
+
+- [ ] **`xbrl_facts`** — client over `data.sec.gov/api/xbrl/companyfacts/CIK##########.json` and `companyconcept/…`, with the `srt:` / `us-gaap:` namespace aliasing the sampling showed is required, plus a per-company coverage report
+- [ ] **Fact store schema** — `(concept, value, unit, period, accession, form, extracted_by, source_span)`, append-only and versioned. This is the spine everything else hangs from.
+
+### Deferred
+
+8-K item-code filtering (4.02 restatements, 5.02 executive departures, 1.01 material agreements) · Form 4 insider transactions · multi-ticker retrieval · 10-K/A amendment awareness · table-aware extraction, parsing `<table>` to markdown before text extraction so financial tables survive · EDGAR full-text search via `efts.sec.gov` *(endpoint shape unverified — confirm before relying on it)*
+
+## Working principles
+
+- **Nothing is described as working without being run.**
+- **Citation spot-checks are part of "done."** A claimed source span must be verified to appear verbatim in the cited document before the extraction counts as correct.
+- **Count before committing.** Filer populations and data availability get measured against live APIs, not estimated. The figures in [Feasibility](#feasibility-verified-against-live-sec-data) were produced this way, and the XBRL result corrected an earlier optimistic assumption.
+
+---
+
+## Related
+
+- [`EDGAR-INTELLIGENCE-HANDOFF.md`](EDGAR-INTELLIGENCE-HANDOFF.md) — the session handoff that established this direction, including the reasoning behind separating this from the FinAgent platform repository.
+
+## Data source
+
+All data originates from the SEC's public EDGAR system and its free APIs at `data.sec.gov`. No API key is required. SEC guidelines require a declared `User-Agent` header identifying the requester, and request rates are capped at 10 per second.
