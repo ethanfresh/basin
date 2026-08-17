@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Basin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000;
+    --panel: #0a0a0a;
+    --line: #1a1a1a;
+    --line-soft: #141414;
+    --text: #f2f2f2;
+    --muted: #7a7a7a;
+    --dim: #4a4a4a;
+    --accent: #00e585;
+    --accent-dim: rgba(0, 229, 133, 0.14);
+    --warn: #e5a000;
+    /* Inter for text, JetBrains Mono for figures. Both fall back to system
+       faces so the dashboard still renders correctly with no network. */
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: inherit; }
+
+  /* ---- masthead ---- */
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 28px;
+    padding: 28px 40px 0;
+  }
+
+  .wordmark {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .wordmark::after {
+    content: "";
+    display: inline-block;
+    width: 5px; height: 5px;
+    margin-left: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
+  }
+
+  .tagline { color: var(--dim); font-size: 12.5px; }
+
+  nav {
+    display: flex;
+    gap: 26px;
+    padding: 22px 40px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  nav button {
+    appearance: none;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    margin-bottom: -1px;
+    padding: 0 0 12px;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.15s;
+  }
+  nav button:hover { color: var(--text); }
+  nav button[aria-selected="true"] {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+
+  main { padding: 32px 40px 80px; }
+
+  /* ---- stat strip ---- */
+
+  .stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 44px;
+    padding: 0 40px 26px;
+  }
+  .stat-label {
+    color: var(--dim);
+    font-size: 10.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+  }
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 21px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.warn { color: var(--warn); }
+
+  /* ---- controls ---- */
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 26px;
+  }
+
+  select {
+    appearance: none;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 8px 30px 8px 11px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%237a7a7a' stroke-width='1.4'><path d='M1 1l4 4 4-4'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 11px center;
+  }
+  select:focus { outline: none; border-color: var(--accent); }
+
+  .count { color: var(--dim); font-size: 12.5px; margin-left: auto; }
+
+  /* ---- tables ---- */
+
+  .scroll { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; }
+
+  th {
+    text-align: left;
+    padding: 0 16px 10px 0;
+    color: var(--dim);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  th.num, td.num { text-align: right; }
+
+  td {
+    padding: 13px 16px 13px 0;
+    border-bottom: 1px solid var(--line-soft);
+    white-space: nowrap;
+  }
+  tbody tr:hover td { background: #070707; }
+
+  .ticker {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  .name { color: var(--text); }
+  .name .cik { color: var(--dim); font-size: 11.5px; margin-left: 8px; font-family: var(--mono); }
+
+  .value {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+  }
+  .unit { color: var(--muted); font-size: 11.5px; margin-left: 6px; }
+  .sub { color: var(--dim); font-size: 11.5px; font-family: var(--mono); }
+
+  /* magnitude bar: relative scale inside the column, not decoration */
+  .bar-cell { width: 140px; padding-right: 0; }
+  .bar { height: 2px; background: var(--accent); opacity: 0.55; border-radius: 1px; }
+
+  .tag {
+    display: inline-block;
+    padding: 2.5px 7px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .tag.product { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-dim); }
+  .tag.warn { color: var(--warn); border-color: rgba(229,160,0,0.25); background: rgba(229,160,0,0.09); }
+
+  .cite {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    text-decoration: none;
+    border-bottom: 1px solid var(--line);
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .cite:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ---- coverage matrix ---- */
+
+  .matrix td { padding: 0; border: 0; text-align: center; }
+  .matrix td.ticker, .matrix td.name { text-align: left; padding-right: 16px; }
+  .matrix th.rot {
+    width: 74px;
+    padding: 0 4px 12px;
+    text-align: center;
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+    white-space: normal;
+    vertical-align: bottom;
+    line-height: 1.35;
+  }
+  .cell {
+    width: 22px; height: 22px;
+    border-radius: 3px;
+    background: #0d0d0d;
+    margin: 2px auto;
+    display: block;
+  }
+  .cell.has { background: var(--accent); opacity: 0.28; }
+  .cell.has.current { opacity: 0.95; }
+
+  .legend { display: flex; gap: 20px; align-items: center; color: var(--dim); font-size: 11.5px; margin-top: 22px; }
+  .legend .cell { display: inline-block; vertical-align: middle; width: 12px; height: 12px; margin-right: 7px; }
+
+  /* ---- notes ---- */
+
+  .note {
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.65;
+    max-width: 760px;
+    margin: 0 0 26px;
+  }
+  .note strong { color: var(--text); font-weight: 500; }
+
+  h2 {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 40px 0 16px;
+  }
+  h2:first-of-type { margin-top: 0; }
+
+  .callout {
+    border-left: 2px solid var(--warn);
+    background: rgba(229, 160, 0, 0.045);
+    padding: 13px 16px;
+    margin-bottom: 24px;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.65;
+    max-width: 900px;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout em { color: var(--text); font-style: normal; font-family: var(--mono); font-size: 11.5px; }
+
+  tr.group td {
+    padding: 26px 0 9px;
+    border-bottom: 1px solid var(--line);
+  }
+  tr.group:first-child td { padding-top: 4px; }
+  tr:hover.group td { background: none; }
+  .group-unit {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+  }
+  .group-count { color: var(--dim); font-size: 11.5px; margin-left: 12px; }
+
+  .empty { color: var(--dim); padding: 40px 0; font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="wordmark">Basin</span>
+  <span class="tagline">Peer-comparable financials for US oil &amp; gas producers, cited to the filing</span>
+</header>
+
+<div class="stats" id="stats"></div>
+
+<nav>
+  <button data-view="panel" aria-selected="true">Panel</button>
+  <button data-view="coverage" aria-selected="false">Coverage</button>
+  <button data-view="companies" aria-selected="false">Companies</button>
+  <button data-view="quality" aria-selected="false">Data quality</button>
+</nav>
+
+<main>
+  <section id="view-panel">
+    <div class="controls">
+      <select id="concept"></select>
+      <select id="period"></select>
+      <select id="product"><option value="">All products</option></select>
+      <span class="count" id="panel-count"></span>
+    </div>
+    <div class="callout" id="panel-warning" hidden>
+      Filers declare this concept in more than one unit (<span id="panel-warning-units"></span>),
+      and they disagree about whether the value already has the unit's prefix applied — Diamondback
+      reports base units under an <em>MBoe</em> label while Devon scales its value to match
+      <em>MMcfe</em>. Magnitude therefore cannot be derived from value and unit alone, so rows are
+      grouped and ranked only against like-declared peers. Cross-unit normalisation needs
+      per-filer calibration and is not applied here.
+    </div>
+    <div class="scroll"><table id="panel-table"></table></div>
+  </section>
+
+  <section id="view-coverage" hidden>
+    <p class="note">
+      Which companies tag which concepts in XBRL, and how recently. A solid mark is
+      <strong>current</strong> (period ending 2023 or later); a faint mark means the filer tagged the
+      concept once and stopped. Blank is the gap the extraction layer has to close.
+    </p>
+    <div class="scroll"><table class="matrix" id="coverage-table"></table></div>
+    <div class="legend">
+      <span><span class="cell has current"></span>Current</span>
+      <span><span class="cell has"></span>Stale</span>
+      <span><span class="cell"></span>Never tagged</span>
+    </div>
+  </section>
+
+  <section id="view-companies" hidden>
+    <div class="scroll"><table id="companies-table"></table></div>
+  </section>
+
+  <section id="view-quality" hidden>
+    <p class="note">
+      What the dataset knows is questionable about itself. None of this is corrected silently:
+      rewriting a filer's own disclosure would be worse than reporting it with the caveat attached.
+    </p>
+    <h2>Unit discontinuities</h2>
+    <p class="note">
+      Series where the filer changed the declared unit partway through. Devon tags total proved
+      reserves as <strong>MMBoe</strong> through FY2022 and <strong>MMcfe</strong> from FY2023 while
+      the values run continuously — a real BOE-to-cfe change would move the figure about sixfold, so
+      the later label is wrong.
+    </p>
+    <div class="scroll"><table id="discontinuity-table"></table></div>
+
+    <h2>Fallback tags</h2>
+    <p class="note">
+      Cells filled from a less specific XBRL tag because the filer did not tag the precise concept.
+      <strong>RevenueFromContractWithCustomerExcludingAssessedTax</strong> is total revenue, not oil
+      and gas revenue — comparable only with that difference stated.
+    </p>
+    <div class="scroll"><table id="fallback-table"></table></div>
+  </section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const api = (p) => fetch(p).then((r) => r.json());
+
+const fmt = (v, unit) => {
+  if (v === null || v === undefined) return "—";
+  const abs = Math.abs(v);
+  if (unit === "USD") {
+    if (abs >= 1e9) return (v / 1e9).toFixed(2) + "B";
+    if (abs >= 1e6) return (v / 1e6).toFixed(1) + "M";
+    if (abs >= 1e3) return (v / 1e3).toFixed(1) + "K";
+    return v.toFixed(0);
+  }
+  if (abs >= 1e6) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (abs >= 100) return v.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+};
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- masthead stats ----
+
+async function loadStats() {
+  const s = await api("/api/summary");
+  $("#stats").innerHTML = [
+    ["Companies", s.companies, ""],
+    ["Facts", s.facts.toLocaleString(), ""],
+    ["Current cells", s.cells.toLocaleString(), "accent"],
+    ["Filings cited", s.filings.toLocaleString(), ""],
+    ["Periods", `${(s.earliest_period || "").slice(0, 4)}–${(s.latest_period || "").slice(0, 4)}`, ""],
+    ["Flagged series", s.unit_discontinuities, s.unit_discontinuities ? "warn" : ""],
+  ].map(([label, value, cls]) =>
+    `<div><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`
+  ).join("");
+}
+
+// ---- panel ----
+
+let concepts = [];
+
+async function loadConcepts() {
+  concepts = await api("/api/concepts");
+  $("#concept").innerHTML = concepts
+    .map((c) => `<option value="${c.key}">${esc(c.label)}</option>`)
+    .join("");
+  await loadPeriods();
+}
+
+async function loadPeriods() {
+  const periods = await api(`/api/periods?concept=${$("#concept").value}`);
+  $("#period").innerHTML = periods.map((p) => `<option value="${p}">${p}</option>`).join("");
+  await loadPanel();
+}
+
+async function loadPanel() {
+  const concept = $("#concept").value;
+  const period = $("#period").value;
+  const product = $("#product").value;
+  if (!concept || !period) return;
+
+  const rows = await api(
+    `/api/panel?concept=${encodeURIComponent(concept)}&period=${encodeURIComponent(period)}` +
+    (product ? `&product=${encodeURIComponent(product)}` : "")
+  );
+
+  // Repopulate the product filter from what this concept actually has.
+  const products = [...new Set(rows.map((r) => r.product).filter(Boolean))];
+  const keep = $("#product").value;
+  $("#product").innerHTML =
+    `<option value="">All products</option>` +
+    products.map((p) => `<option value="${p}"${p === keep ? " selected" : ""}>${p}</option>`).join("");
+  $("#product").parentElement && ($("#product").hidden = products.length === 0 && !keep);
+
+  $("#panel-count").textContent = rows.length
+    ? `${rows.length} companies · every value cited to its filing`
+    : "";
+
+  if (!rows.length) {
+    $("#panel-warning").hidden = true;
+    $("#panel-table").innerHTML =
+      `<tbody><tr><td class="empty">No data for this period.</td></tr></tbody>`;
+    return;
+  }
+
+  // Group by declared unit. Comparison is only defensible inside a group.
+  const groups = {};
+  for (const r of rows) (groups[r.unit] ??= []).push(r);
+  const units = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
+
+  $("#panel-warning").hidden = units.length < 2;
+  $("#panel-warning-units").textContent = units.join(", ");
+
+  const header = `
+    <thead><tr>
+      <th style="width:70px">Ticker</th>
+      <th>Company</th>
+      <th class="num">Value</th>
+      <th class="bar-cell"></th>
+      <th>Product</th>
+      <th>Basis</th>
+      <th>Source</th>
+      <th>XBRL tag</th>
+    </tr></thead>`;
+
+  const body = units.map((unit) => {
+    const group = groups[unit];
+    // Bars scale within the group, never across groups.
+    const max = Math.max(...group.map((r) => Math.abs(r.value)));
+    const groupHeader = units.length > 1
+      ? `<tr class="group"><td colspan="8">
+           <span class="group-unit">${esc(unit)}</span>
+           <span class="group-count">${group.length} ${group.length === 1 ? "company" : "companies"} · comparable within this group only</span>
+         </td></tr>`
+      : "";
+    return groupHeader + group.map((r) => `
+      <tr>
+        <td class="ticker">${esc(r.ticker || "—")}</td>
+        <td class="name">${esc(r.name)}<span class="cik">${esc(r.cik)}</span></td>
+        <td class="num"><span class="value">${fmt(r.value, r.unit)}</span><span class="unit">${esc(r.unit)}</span></td>
+        <td class="bar-cell"><div class="bar" style="width:${(Math.abs(r.value) / max) * 100}%"></div></td>
+        <td>${r.product ? `<span class="tag product">${esc(r.product)}</span>` : `<span class="sub">—</span>`}</td>
+        <td>${r.unit_changed
+              ? `<span class="tag warn" title="This filer changed the declared unit mid-series: ${esc(r.series_units)}">unit changed</span>`
+              : `<span class="sub">—</span>`}</td>
+        <td><a class="cite" href="https://www.sec.gov/Archives/edgar/data/${parseInt(r.cik, 10)}/${r.accession.replace(/-/g, "")}/${r.accession}-index.htm"
+               target="_blank" rel="noopener"
+               title="${esc(r.form)} filed ${esc(r.filed_date)}">${esc(r.accession)}</a></td>
+        <td><span class="sub">${esc(r.taxonomy)}:${esc(r.tag)}</span></td>
+      </tr>`).join("");
+  }).join("");
+
+  $("#panel-table").innerHTML = header + `<tbody>${body}</tbody>`;
+}
+
+// ---- coverage ----
+
+// Short column headers: the matrix is scanned as a shape, so the labels have
+// to stay narrow enough that the grid reads as a grid.
+const SHORT_LABEL = {
+  proved_developed_reserves_boe: "Proved<br>developed",
+  proved_undeveloped_reserves_boe: "Proved<br>undeveloped",
+  proved_reserves_boe: "Total<br>proved",
+  standardized_measure: "Standardized<br>measure",
+  production_volume: "Production<br>volume",
+  oil_and_gas_revenue: "Oil &amp; gas<br>revenue",
+  capex: "Capex",
+  average_sales_price: "Realized<br>price",
+  production_cost_per_boe: "Cost<br>per BOE",
+};
+
+async function loadCoverage() {
+  const data = await api("/api/coverage");
+  const labels = Object.fromEntries(concepts.map((c) => [c.key, c.label]));
+  const short = (k) => labels[k] || k;
+
+  $("#coverage-table").innerHTML = `
+    <thead><tr>
+      <th style="width:64px">Ticker</th><th style="min-width:210px">Company</th>
+      ${data.concept_keys.map((k) =>
+        `<th class="rot" title="${esc(short(k))}">${SHORT_LABEL[k] || esc(short(k))}</th>`).join("")}
+    </tr></thead>
+    <tbody>${data.companies.map((c) => `
+      <tr>
+        <td class="ticker">${esc(c.ticker || "—")}</td>
+        <td class="name">${esc(c.name)}</td>
+        ${data.concept_keys.map((k) => {
+          const cell = c.concepts[k];
+          if (!cell) return `<td><span class="cell"></span></td>`;
+          const current = cell.latest_period >= "2023-01-01";
+          return `<td><span class="cell has ${current ? "current" : ""}"
+                    title="${esc(short(k))} — latest ${esc(cell.latest_period)}, ${cell.cells} cells"></span></td>`;
+        }).join("")}
+      </tr>`).join("")}
+    </tbody>`;
+}
+
+// ---- companies ----
+
+async function loadCompanies() {
+  const rows = await api("/api/companies");
+  $("#companies-table").innerHTML = `
+    <thead><tr>
+      <th style="width:70px">Ticker</th><th>Company</th>
+      <th class="num">Concepts</th><th class="num">Cells</th><th>Latest period</th>
+    </tr></thead>
+    <tbody>${rows.map((r) => `
+      <tr>
+        <td class="ticker">${esc(r.ticker || "—")}</td>
+        <td class="name">${esc(r.name)}<span class="cik">${esc(r.cik)}</span></td>
+        <td class="num"><span class="value">${r.concepts}</span></td>
+        <td class="num"><span class="value">${r.cells}</span></td>
+        <td><span class="sub">${esc(r.latest_period || "—")}</span></td>
+      </tr>`).join("")}
+    </tbody>`;
+}
+
+// ---- quality ----
+
+async function loadQuality() {
+  const data = await api("/api/quality");
+  const labels = Object.fromEntries(concepts.map((c) => [c.key, c.label]));
+
+  $("#discontinuity-table").innerHTML = data.unit_discontinuities.length ? `
+    <thead><tr>
+      <th style="width:70px">Ticker</th><th>Company</th><th>Concept</th>
+      <th>Units declared</th><th>Range</th>
+    </tr></thead>
+    <tbody>${data.unit_discontinuities.map((r) => `
+      <tr>
+        <td class="ticker">${esc(r.ticker || "—")}</td>
+        <td class="name">${esc(r.name)}</td>
+        <td>${esc(labels[r.concept_key] || r.concept_key)}</td>
+        <td><span class="tag warn">${esc(r.units)}</span></td>
+        <td><span class="sub">${esc(r.first_period)} → ${esc(r.last_period)}</span></td>
+      </tr>`).join("")}
+    </tbody>` : `<tbody><tr><td class="empty">None.</td></tr></tbody>`;
+
+  $("#fallback-table").innerHTML = data.fallback_tags.length ? `
+    <thead><tr>
+      <th style="width:70px">Ticker</th><th>Company</th><th>Concept</th>
+      <th>Tag used</th><th class="num">Cells</th>
+    </tr></thead>
+    <tbody>${data.fallback_tags.map((r) => `
+      <tr>
+        <td class="ticker">${esc(r.ticker || "—")}</td>
+        <td class="name">${esc(r.name)}</td>
+        <td>${esc(labels[r.concept_key] || r.concept_key)}</td>
+        <td><span class="tag">${esc(r.tag)}</span></td>
+        <td class="num"><span class="value">${r.cells}</span></td>
+      </tr>`).join("")}
+    </tbody>` : `<tbody><tr><td class="empty">None.</td></tr></tbody>`;
+}
+
+// ---- nav ----
+
+const loaders = { coverage: loadCoverage, companies: loadCompanies, quality: loadQuality };
+const loaded = new Set(["panel"]);
+
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const view = btn.dataset.view;
+    document.querySelectorAll("nav button").forEach((b) =>
+      b.setAttribute("aria-selected", String(b === btn)));
+    document.querySelectorAll("main section").forEach((s) =>
+      s.hidden = s.id !== `view-${view}`);
+    if (!loaded.has(view)) { await loaders[view](); loaded.add(view); }
+  });
+});
+
+$("#concept").addEventListener("change", loadPeriods);
+$("#period").addEventListener("change", loadPanel);
+$("#product").addEventListener("change", loadPanel);
+
+loadStats();
+loadConcepts();
+</script>
+</body>
+</html>

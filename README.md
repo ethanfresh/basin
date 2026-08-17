@@ -204,7 +204,11 @@ The first live instance of this turned up in the Facts layer, before any languag
 - **Products collide inside one concept.** XBRL dimensions realized price by product, but the `companyfacts` API flattens the dimension away. Matador's oil and gas prices arrived as two values on one concept, distinguishable only by unit (`USD/bbl` vs `USD/MMBTU`). Product is therefore part of a cell's identity — oil price and gas price are separate rows, not competitors for one cell.
 - **A filer's own unit label can be wrong.** Devon tags total proved reserves as `MMBoe` through FY2022 and `MMcfe` from FY2023, while the values run continuously (2182 → 1817 → 2155). A genuine BOE-to-cfe change would move the figure roughly sixfold; their *developed* reserves stay in `MMBoe` at a comparable magnitude in the same filings. The later unit label is simply incorrect.
 
-Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, so the caveat can travel with the cell.
+- **The declared unit does not determine the magnitude.** Filers disagree about whether the tagged value already has its unit's prefix applied. Diamondback reports proved developed reserves as `2,521,028,000` tagged `MBoe` — base units under a presentational label, since their reserves are ~2.5 billion BOE, not 2.5 trillion. Devon reports `2,155` tagged `MMcfe`, where the value *is* scaled to the label. Both are internally coherent; neither is inferable from `(value, unit)` alone.
+
+Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, and the dashboard groups a peer table by declared unit so it never renders a ranking it cannot support. **Cross-unit normalisation of volume concepts needs per-filer calibration and is deliberately not applied.**
+
+This is the sharpest form of the comparability problem so far, and it lands in the Facts layer — the one that was supposed to be the easy, exact one. XBRL removes the risk of a *fabricated* number; it does not deliver a *comparable* one.
 
 ## Scope of the first version
 
@@ -233,9 +237,26 @@ python scripts/coverage_report.py --all-concepts --cik 1090012 --cik 1539838
 
 # Ingest XBRL facts into the store (idempotent per accession)
 python scripts/ingest_xbrl.py --cik 1090012 --cik 1539838
+python scripts/load_cohort.py          # tickers and cohort metadata
 
 pytest
 ```
+
+### The dashboard
+
+```bash
+uv pip install -e ".[web]"
+python -m uvicorn basin.web.app:app --port 8422
+```
+
+Four views over the store at `http://localhost:8422`:
+
+- **Panel** — one concept, one period, every company. Rows are grouped by declared unit, because ranking across units would sort by labelling convention rather than size. Every row links to the SEC index page for the accession it came from.
+- **Coverage** — the companies × concepts matrix, distinguishing current from stale from never-tagged. The blank space is the extraction layer's mandate, drawn to scale.
+- **Companies** — cohort members by how much data each actually has.
+- **Data quality** — unit discontinuities and fallback tags. Nothing here is silently corrected.
+
+The app opens the store read-only, and every query lives in `basin.store.queries`, so what the browser renders and what the tests assert on are the same code.
 
 ## Roadmap
 
