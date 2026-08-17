@@ -318,14 +318,7 @@
       <select id="product"><option value="">All products</option></select>
       <span class="count" id="panel-count"></span>
     </div>
-    <div class="callout" id="panel-warning" hidden>
-      Filers declare this concept in more than one unit (<span id="panel-warning-units"></span>),
-      and they disagree about whether the value already has the unit's prefix applied — Diamondback
-      reports base units under an <em>MBoe</em> label while Devon scales its value to match
-      <em>MMcfe</em>. Magnitude therefore cannot be derived from value and unit alone, so rows are
-      grouped and ranked only against like-declared peers. Cross-unit normalisation needs
-      per-filer calibration and is not applied here.
-    </div>
+    <div class="callout" id="panel-warning" hidden></div>
     <div class="scroll"><table id="panel-table"></table></div>
   </section>
 
@@ -461,8 +454,24 @@ async function loadPanel() {
   for (const r of rows) (groups[r.unit] ??= []).push(r);
   const units = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
 
+  // Two different reasons a concept can span units, needing two different
+  // caveats. Rate units ("USD/bbl") differ because they measure different
+  // things; volume units differ because filers scale their values
+  // inconsistently against the label. Saying the wrong one would be worse
+  // than saying nothing.
+  const isRate = units.every((u) => u.includes("/"));
   $("#panel-warning").hidden = units.length < 2;
-  $("#panel-warning-units").textContent = units.join(", ");
+  $("#panel-warning").innerHTML = units.length < 2 ? "" : isRate
+    ? `Values here are quoted against different denominators (<em>${units.map(esc).join("</em>, <em>")}</em>),
+       which measure different things rather than the same thing at different scales. Converting
+       between them requires a heat-content assumption that varies by filer and period, so rows are
+       grouped by denominator and compared only against like-quoted peers.`
+    : `Filers declare this concept in more than one unit (<em>${units.map(esc).join("</em>, <em>")}</em>),
+       and they disagree about whether the value already has the unit's prefix applied — Diamondback
+       reports base units under an <em>MBoe</em> label while Devon scales its value to match
+       <em>MMcfe</em>. Magnitude therefore cannot be derived from value and unit alone, so rows are
+       grouped and ranked only against like-declared peers. Cross-unit normalisation needs
+       per-filer calibration and is not applied here.`;
 
   const header = `
     <thead><tr>
