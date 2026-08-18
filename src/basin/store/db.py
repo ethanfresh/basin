@@ -31,8 +31,34 @@ def connect(path: Path | str = DEFAULT_DB_PATH, *, create: bool = True) -> sqlit
     conn.execute("PRAGMA foreign_keys = ON")
     if create:
         conn.executescript(schema_sql())
+        _add_missing_columns(conn)
         conn.commit()
     return conn
+
+
+# Columns added after a store was first created. `CREATE TABLE IF NOT EXISTS`
+# leaves an existing table alone, so new columns need adding explicitly rather
+# than by rebuilding — the fact rows are expensive to re-fetch.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "fact_verification": {
+        "page": "INTEGER",
+        "line_no": "INTEGER",
+        "char_offset": "INTEGER",
+        "section": "TEXT",
+        "line_text": "TEXT",
+        "units_nearby": "TEXT",
+    },
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue
+        for name, decl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def upsert_company(
@@ -202,6 +228,12 @@ def record_verification(
     scale_label: str | None = None,
     hits: int | None = None,
     source_span: str | None = None,
+    char_offset: int | None = None,
+    line_no: int | None = None,
+    section: str | None = None,
+    units_nearby: str | None = None,
+    page: int | None = None,
+    line_text: str | None = None,
     note: str | None = None,
 ) -> None:
     """Record the outcome of checking one fact against its filing."""
@@ -209,17 +241,22 @@ def record_verification(
         """
         INSERT INTO fact_verification
             (fact_id, status, document, printed, scale_found, scale_label,
-             hits, source_span, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             hits, source_span, char_offset, line_no, section, units_nearby,
+             page, line_text, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(fact_id) DO UPDATE SET
             status = excluded.status, document = excluded.document,
             printed = excluded.printed, scale_found = excluded.scale_found,
             scale_label = excluded.scale_label, hits = excluded.hits,
-            source_span = excluded.source_span, note = excluded.note,
-            checked_at = datetime('now')
+            source_span = excluded.source_span,
+            char_offset = excluded.char_offset, line_no = excluded.line_no,
+            section = excluded.section, units_nearby = excluded.units_nearby,
+            page = excluded.page, line_text = excluded.line_text,
+            note = excluded.note, checked_at = datetime('now')
         """,
         (fact_id, status, document, printed, scale_found, scale_label,
-         hits, source_span, note),
+         hits, source_span, char_offset, line_no, section, units_nearby,
+         page, line_text, note),
     )
 
 

@@ -18,7 +18,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from basin.documents.text import snippet
+from basin.documents.headers import unit_hints
+from basin.documents.text import line_of, section_of, snippet
 
 # Scales worth trying, as (factor, label). A document value equal to the
 # stored value divided by the factor means the filing presents the figure in
@@ -44,8 +45,11 @@ class Match:
     scale: float
     scale_label: str
     offset: int
+    line: int
+    section: str | None
     hits: int
     source_span: str
+    units_nearby: tuple[str, ...] = ()
 
     @property
     def unambiguous(self) -> bool:
@@ -106,7 +110,10 @@ def find_value(text: str, value: float) -> Match | None:
             scale=factor,
             scale_label=label,
             offset=start,
+            line=line_of(text, start),
+            section=section_of(text, start),
             hits=len(positions),
             source_span=snippet(text, start, start + len(printed)),
+            units_nearby=tuple(h.unit for h in unit_hints(text, start, len(printed))),
         )
     return None

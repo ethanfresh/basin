@@ -47,6 +47,7 @@ class Candidate:
     divisor: float
     canonical_value: float
     label: str
+    unit: str = ""
 
 
 @dataclass(frozen=True)
@@ -55,22 +56,52 @@ class Resolution:
 
     status: str
     reserve_divisor: float | None = None
+    reserve_unit: str | None = None
     measure_divisor: float | None = None
     usd_per_boe: float | None = None
     rejected: str = ""
     note: str = ""
 
 
-def candidates(value: float, unit: str, scale: float | None) -> list[Candidate]:
-    """The distinct readings of *value* implied by its verified scale."""
-    conversion = conversion_for(unit)
-    if conversion is None:
-        return []
-    out = [Candidate(1.0, value * conversion.factor, "as tagged")]
-    if scale and scale != 1.0:
+def candidates(
+    value: float,
+    unit: str,
+    scale: float | None,
+    header_units: tuple[str, ...] | list[str] = (),
+) -> list[Candidate]:
+    """The distinct readings of *value* implied by its scale and its units.
+
+    Two axes vary. The verified scale gives "as tagged" against "as printed".
+    The unit gives whatever the filer declared, plus anything the document's
+    own table header states -- because the declared unit is sometimes wrong in
+    a way scale alone cannot see. Gulfport tags total proved reserves in
+    ``bbl`` under a header reading ``Total (Bcfe)``.
+
+    Every combination becomes a candidate; the caller decides which survives.
+    """
+    units: list[tuple[str, str]] = [(unit, "declared")]
+    for header_unit in header_units:
+        if header_unit != unit:
+            units.append((header_unit, f"header {header_unit}"))
+
+    out: list[Candidate] = []
+    for candidate_unit, origin in units:
+        conversion = conversion_for(candidate_unit)
+        if conversion is None:
+            continue
+        suffix = "" if origin == "declared" else f", {origin}"
         out.append(
-            Candidate(scale, (value / scale) * conversion.factor, "as printed")
+            Candidate(1.0, value * conversion.factor, f"as tagged{suffix}", candidate_unit)
         )
+        if scale and scale != 1.0:
+            out.append(
+                Candidate(
+                    scale,
+                    (value / scale) * conversion.factor,
+                    f"as printed{suffix}",
+                    candidate_unit,
+                )
+            )
     return out
 
 
@@ -80,6 +111,7 @@ def resolve(
     reserve_scale: float | None,
     measure_value: float | None,
     measure_scale: float | None,
+    header_units: tuple[str, ...] | list[str] = (),
 ) -> Resolution:
     """Choose the reserve and standardized-measure readings that agree.
 
@@ -87,7 +119,7 @@ def resolve(
     actually report. Where several combinations qualify, the one closest to
     the middle of the band wins and the rest are recorded as rejected.
     """
-    reserves = candidates(reserve_value, reserve_unit, reserve_scale)
+    reserves = candidates(reserve_value, reserve_unit, reserve_scale, header_units)
     if not reserves:
         return Resolution(STATUS_UNAVAILABLE, note=f"no canonical form for {reserve_unit}")
     if measure_value is None:
@@ -135,6 +167,7 @@ def resolve(
     return Resolution(
         STATUS_RESOLVED,
         reserve_divisor=reserve.divisor,
+        reserve_unit=reserve.unit or reserve_unit,
         measure_divisor=measure.divisor,
         usd_per_boe=ratio,
         rejected="; ".join(rejected),

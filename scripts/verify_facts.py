@@ -19,11 +19,13 @@ import collections
 import sys
 from pathlib import Path
 
-from basin.documents import document_url, find_value, html_to_text, primary_document
+from basin.documents import find_value, html_to_text, primary_document
+from basin.documents.corpus import fetch as fetch_document
+from basin.documents.text import parse
 from basin.edgar import EdgarClient, NotFound, SECError
 from basin.store import DEFAULT_DB_PATH, connect, record_verification
 
-DOC_CACHE = Path("data/cache/documents")
+
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,23 +38,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_text(client: EdgarClient, cik: str, accession: str) -> tuple[str, str] | None:
-    """Fetch and cache the filing's primary document as flattened text."""
-    cached = DOC_CACHE / f"{accession}.txt"
-    name_file = DOC_CACHE / f"{accession}.name"
-    if cached.exists() and name_file.exists():
-        return name_file.read_text().strip(), cached.read_text()
+def load_document(client: EdgarClient, cik: str, accession: str):
+    """Return the filing's primary document, parsed with page/line coordinates.
 
+    The corpus holds the document as filed; flattening happens here, on every
+    read, so improving the parser takes effect without refetching anything.
+    """
     document = primary_document(cik, accession, client=client)
     if not document:
         return None
-    raw = client.get_text(document_url(cik, accession, document))
-    text = html_to_text(raw)
-
-    DOC_CACHE.mkdir(parents=True, exist_ok=True)
-    cached.write_text(text)
-    name_file.write_text(document)
-    return document, text
+    return document, parse(fetch_document(client, cik, accession, document))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         with EdgarClient() as client:
             for n, ((cik, accession), group) in enumerate(sorted(by_accession.items()), 1):
                 try:
-                    loaded = load_text(client, cik, accession)
+                    loaded = load_document(client, cik, accession)
                 except (NotFound, SECError) as exc:
                     for fact in group:
                         record_verification(conn, fact["id"], "unavailable", note=str(exc)[:200])
@@ -105,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
                         counts["unavailable"] += 1
                     continue
 
-                document, text = loaded
+                document, parsed = loaded
+                text = parsed.text
                 for fact in group:
                     match = find_value(text, fact["value"])
                     if match is None:
@@ -124,6 +120,15 @@ def main(argv: list[str] | None = None) -> int:
                         scale_label=match.scale_label,
                         hits=match.hits,
                         source_span=match.source_span,
+                        char_offset=match.offset,
+                        line_no=match.line,
+                        section=match.section,
+                        units_nearby="|".join(match.units_nearby) or None,
+                        # Page and the full line are what make the citation
+                        # actionable: a reader opens the filing at that page
+                        # and scans one line rather than 3MB of HTML.
+                        page=(located.page if (located := parsed.locate(match.offset)) else None),
+                        line_text=(located.text[:400] if located else None),
                     )
                     counts["found"] += 1
                     scales[match.scale_label] += 1

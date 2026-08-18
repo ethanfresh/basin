@@ -322,6 +322,16 @@ CREATE TABLE IF NOT EXISTS fact_verification (
     scale_label  TEXT,
     hits         INTEGER,            -- occurrences; 1 is strong, 50 is weak
     source_span  TEXT,               -- verbatim quote around the match
+    -- Where to look. A citation that says "somewhere in this 3MB document"
+    -- is barely better than none, so the coordinates a reader actually uses
+    -- are stored: the printed page, the line within the document, and the
+    -- "Item N." heading the figure sits under.
+    page         INTEGER,            -- printed page, from <hr> page breaks
+    line_no      INTEGER,            -- line within the flattened document
+    char_offset  INTEGER,
+    section      TEXT,               -- the "Item N." heading it sits under
+    line_text    TEXT,               -- the whole line, for display
+    units_nearby TEXT,               -- units read from the table header / prose
     note         TEXT,
     checked_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -339,7 +349,9 @@ SELECT f.*,
        v.scale_found AS verify_scale,
        v.hits        AS verify_hits,
        v.source_span AS verify_span,
-       v.document    AS verify_document
+       v.document    AS verify_document,
+       v.line_no     AS verify_line,
+       v.section     AS verify_section
 FROM fact_current f
 LEFT JOIN fact_verification v ON v.fact_id = f.id;
 

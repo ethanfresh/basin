@@ -125,6 +125,39 @@ def api_company(cik: str) -> list[dict]:
         conn.close()
 
 
+@app.get("/api/fact/{fact_id}/locator")
+def api_fact_locator(fact_id: int) -> dict:
+    conn = _conn()
+    try:
+        found = queries.fact_locator(conn, fact_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"no fact {fact_id}")
+        return found
+    finally:
+        conn.close()
+
+
+@app.get("/api/citation/{fact_id}")
+def api_citation(fact_id: int) -> dict:
+    conn = _conn()
+    try:
+        found = queries.citation(conn, fact_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"no fact {fact_id}")
+        return found
+    finally:
+        conn.close()
+
+
+@app.get("/api/trends")
+def api_trends(concept: str = Query(...), normalized: bool = True, limit: int = 12) -> dict:
+    conn = _conn()
+    try:
+        return queries.trends(conn, concept, normalized=normalized, limit=limit)
+    finally:
+        conn.close()
+
+
 @app.get("/api/coverage")
 def api_coverage() -> dict:
     conn = _conn()

@@ -97,7 +97,7 @@ def panel(
     arrives with the caveat attached rather than looking clean.
     """
     sql = """
-        SELECT f.cik, c.name, c.ticker, c.basin,
+        SELECT f.id, f.cik, c.name, c.ticker, c.basin,
                f.value, f.unit, f.product,
                f.period_start, f.period_end, f.fiscal_year, f.fiscal_period,
                f.accession, f.form, f.taxonomy, f.tag,
@@ -327,3 +327,166 @@ def reserve_ratios(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         ORDER BY r.ratio
         """,
     )
+
+
+def fact_locator(conn: sqlite3.Connection, fact_id: int) -> dict[str, Any] | None:
+    """Everything needed to find one number in its filing, by hand.
+
+    The point of the store is that any cell can be checked against the
+    document behind it, so this returns the document, the Item section, the
+    line, the character offset, and the verbatim text around the figure --
+    plus the resolved magnitude and the evidence for it.
+
+    On page numbers: EDGAR serves filings as HTML, which has none. The page
+    numbers printed in a 10-K belong to its print rendering and are not in the
+    markup, so the locator gives the line and the Item heading, which are what
+    the document itself actually defines.
+    """
+    row = conn.execute(
+        """
+        SELECT f.id, f.cik, c.name, c.ticker, f.concept_key, f.value, f.unit,
+               f.product, f.period_start, f.period_end, f.fiscal_period,
+               f.accession, f.form, f.taxonomy, f.tag, f.extracted_by,
+               fl.filed_date,
+               v.status AS verify_status, v.document, v.printed, v.scale_found,
+               v.scale_label, v.hits, v.source_span, v.char_offset, v.line_no,
+               v.section, v.units_nearby,
+               s.canonical_value, s.canonical_unit, s.divisor AS scale_divisor,
+               s.conversion_note, s.basis AS scale_basis, s.usd_per_boe,
+               s.rejected AS scale_rejected
+        FROM fact_current f
+        JOIN company c ON c.cik = f.cik
+        JOIN filing fl ON fl.accession = f.accession
+        LEFT JOIN fact_verification v ON v.fact_id = f.id
+        LEFT JOIN fact_scale s ON s.fact_id = f.id
+        WHERE f.id = ?
+        """,
+        (fact_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    out = dict(row)
+    out["filing_url"] = filing_url(out["cik"], out["accession"])
+    out["document_url"] = (
+        f"{SEC_ARCHIVE}/{int(out['cik'])}/{out['accession'].replace('-', '')}/{out['document']}"
+        if out.get("document")
+        else None
+    )
+    out["label"] = (
+        BY_KEY[out["concept_key"]].label
+        if out["concept_key"] in BY_KEY
+        else out["concept_key"]
+    )
+    return out
+
+
+def citation(conn: sqlite3.Connection, fact_id: int) -> dict[str, Any] | None:
+    """Everything needed to check one number against its source, in one call.
+
+    This is the product's core promise made operable: not "here is a number
+    and an accession", but the filing, the document, the page, the line, the
+    heading it sits under, and the line as printed — enough to open the filing
+    and land on the figure.
+    """
+    row = conn.execute(
+        """
+        SELECT f.id, f.cik, c.name, c.ticker, f.concept_key, f.value, f.unit,
+               f.product, f.period_end, f.period_start, f.fiscal_year,
+               f.accession, f.form, f.taxonomy, f.tag, f.extracted_by,
+               fl.filed_date, fl.primary_doc,
+               v.status AS verify_status, v.document, v.printed, v.page,
+               v.line_no, v.section, v.line_text, v.source_span, v.hits,
+               v.scale_found, v.scale_label, v.checked_at,
+               sc.canonical_value, sc.canonical_unit, sc.divisor AS scale_divisor,
+               sc.conversion_note, sc.usd_per_boe, sc.basis AS scale_basis,
+               sc.rejected AS scale_rejected
+        FROM fact f
+        JOIN company c ON c.cik = f.cik
+        JOIN filing fl ON fl.accession = f.accession
+        LEFT JOIN fact_verification v ON v.fact_id = f.id
+        LEFT JOIN fact_scale sc ON sc.fact_id = f.id
+        WHERE f.id = ?
+        """,
+        (fact_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    out = dict(row)
+    out["label"] = BY_KEY[out["concept_key"]].label if out["concept_key"] in BY_KEY else out["concept_key"]
+    out["filing_url"] = filing_url(out["cik"], out["accession"])
+    if out.get("document"):
+        out["document_url"] = (
+            f"{SEC_ARCHIVE}/{int(out['cik'])}/"
+            f"{out['accession'].replace('-', '')}/{out['document']}"
+        )
+    return out
+
+
+def trends(
+    conn: sqlite3.Connection,
+    concept_key: str,
+    *,
+    normalized: bool = True,
+    limit: int = 12,
+) -> dict[str, Any]:
+    """One concept as a time series per company.
+
+    Only annual periods are used, because mixing a Q3 figure into an annual
+    series produces a chart that looks like a collapse and is really a change
+    of period length. Series are ranked by their latest value and truncated,
+    since forty overlapping lines communicate nothing.
+    """
+    rows = _rows(
+        conn,
+        """
+        SELECT f.cik, c.name, c.ticker, f.period_end, f.value, f.unit,
+               f.accession, f.id,
+               sc.canonical_value, sc.canonical_unit
+        FROM fact_current f
+        JOIN company c ON c.cik = f.cik
+        LEFT JOIN fact_scale sc ON sc.fact_id = f.id
+        WHERE f.concept_key = ?
+          AND f.period_end LIKE '%-12-31'
+        ORDER BY f.cik, f.period_end
+        """,
+        (concept_key,),
+    )
+
+    series: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        value = row["canonical_value"] if normalized else row["value"]
+        if value is None:
+            continue
+        entry = series.setdefault(
+            row["cik"],
+            {
+                "cik": row["cik"],
+                "name": row["name"],
+                "ticker": row["ticker"],
+                "unit": row["canonical_unit"] if normalized else row["unit"],
+                "points": [],
+            },
+        )
+        entry["points"].append(
+            {
+                "period": row["period_end"],
+                "value": value,
+                "fact_id": row["id"],
+                "as_filed": row["value"],
+                "filed_unit": row["unit"],
+            }
+        )
+
+    # A single point draws no line, and a chart of dots is not a trend.
+    usable = [s for s in series.values() if len(s["points"]) >= 2]
+    usable.sort(key=lambda s: s["points"][-1]["value"], reverse=True)
+    dropped = len(series) - len(usable)
+    return {
+        "concept": concept_key,
+        "normalized": normalized,
+        "series": usable[:limit],
+        "dropped_single_point": dropped,
+        "omitted": max(0, len(usable) - limit),
+    }

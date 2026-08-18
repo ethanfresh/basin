@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         for r in conn.execute(
             """
             SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
-                   v.scale_found, v.status AS verify_status
+                   v.scale_found, v.status AS verify_status, v.units_nearby
             FROM fact_current f
             LEFT JOIN fact_verification v ON v.fact_id = f.id
             WHERE f.concept_key IN (?, ?, ?, 'standardized_measure')
@@ -71,19 +71,23 @@ def main(argv: list[str] | None = None) -> int:
             anchor["scale_found"],
             measure["value"] if measure else None,
             measure["scale_found"] if measure else None,
+            (anchor["units_nearby"] or "").split("|") if anchor["units_nearby"] else (),
         )
         counts[resolution.status] += 1
         if resolution.status != STATUS_RESOLVED:
             continue
 
-        # One decision governs the whole reserve table for this period.
+        # One decision governs the whole reserve table for this period: the
+        # three reserve lines share a table, so they share its unit and scale.
         for row in group:
-            conversion = conversion_for(row["unit"])
+            is_measure = row["concept_key"] == "standardized_measure"
+            unit = row["unit"] if is_measure else (resolution.reserve_unit or row["unit"])
+            conversion = conversion_for(unit)
             if conversion is None:
                 continue
-            is_measure = row["concept_key"] == "standardized_measure"
             divisor = resolution.measure_divisor if is_measure else resolution.reserve_divisor
             canonical = (row["value"] / divisor) * conversion.factor
+            relabelled = (not is_measure) and unit != row["unit"]
             record_scale(
                 conn,
                 row["id"],
@@ -93,8 +97,16 @@ def main(argv: list[str] | None = None) -> int:
                 basis=(
                     "monetary facts are tagged in dollars"
                     if is_measure
-                    else f"implied ${resolution.usd_per_boe:,.2f}/BOE against the "
-                    "standardized measure"
+                    else (
+                        f"implied ${resolution.usd_per_boe:,.2f}/BOE against the "
+                        "standardized measure"
+                        + (
+                            f"; unit read as {unit} from the filing's table header, "
+                            f"not the tagged {row['unit']}"
+                            if relabelled
+                            else ""
+                        )
+                    )
                 ),
                 conversion_note=conversion.note or None,
                 usd_per_boe=resolution.usd_per_boe,
