@@ -47,6 +47,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "section": "TEXT",
         "line_text": "TEXT",
         "units_nearby": "TEXT",
+        "method": "TEXT",
+        "anchor": "TEXT",
+        "folio": "INTEGER",
+        "scale_declared": "INTEGER",
     },
 }
 
@@ -234,6 +238,10 @@ def record_verification(
     units_nearby: str | None = None,
     page: int | None = None,
     line_text: str | None = None,
+    method: str | None = None,
+    anchor: str | None = None,
+    folio: int | None = None,
+    scale_declared: int | None = None,
     note: str | None = None,
 ) -> None:
     """Record the outcome of checking one fact against its filing."""
@@ -242,8 +250,8 @@ def record_verification(
         INSERT INTO fact_verification
             (fact_id, status, document, printed, scale_found, scale_label,
              hits, source_span, char_offset, line_no, section, units_nearby,
-             page, line_text, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             page, line_text, method, anchor, folio, scale_declared, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(fact_id) DO UPDATE SET
             status = excluded.status, document = excluded.document,
             printed = excluded.printed, scale_found = excluded.scale_found,
@@ -252,11 +260,13 @@ def record_verification(
             char_offset = excluded.char_offset, line_no = excluded.line_no,
             section = excluded.section, units_nearby = excluded.units_nearby,
             page = excluded.page, line_text = excluded.line_text,
+            method = excluded.method, anchor = excluded.anchor,
+            folio = excluded.folio, scale_declared = excluded.scale_declared,
             note = excluded.note, checked_at = datetime('now')
         """,
         (fact_id, status, document, printed, scale_found, scale_label,
          hits, source_span, char_offset, line_no, section, units_nearby,
-         page, line_text, note),
+         page, line_text, method, anchor, folio, scale_declared, note),
     )
 
 

@@ -1167,15 +1167,23 @@ async function openCitation(factId) {
     ${field("Filing", `${esc(c.form)} filed ${esc(c.filed_date)}<div class="sub" style="margin-top:4px">${esc(c.accession)}</div>`)}
     ${field("Document", c.document ? `<span class="sub">${esc(c.document)}</span>` : null)}
     ${field("Location", located
-        ? `Page ${c.page}, line ${c.line_no}` + (c.section ? `<div class="sub" style="margin-top:4px">${esc(c.section)}</div>` : "")
+        ? (c.folio != null
+             ? `Page ${c.folio} <span class="sub">(as printed; sheet ${c.page})</span>`
+             : `Sheet ${c.page} <span class="sub">(this page prints no number)</span>`)
+          + `, line ${c.line_no}`
+          + (c.section ? `<div class="sub" style="margin-top:4px">${esc(c.section)}</div>` : "")
         : `<span class="tag warn">not located</span>`)}
+    ${field("Located by", c.method === "markup"
+        ? `<span class="tag ok">the filing's own XBRL markup</span>`
+          + (c.anchor ? `<div class="sub" style="margin-top:5px">${esc(c.anchor)}</div>` : "")
+        : c.method ? `<span class="tag warn">text search</span>` : null)}
     ${field("Printed as", c.printed ? `<span class="value">${esc(c.printed)}</span>` +
         (c.scale_found && c.scale_found !== 1 ? ` <span class="sub">(${esc(c.scale_label)})</span>` : "") : null)}
     ${field("Occurrences", c.hits != null ? `${c.hits} in the document` : null)}
     ${field("XBRL tag", c.tag ? `<span class="sub">${esc(c.taxonomy)}:${esc(c.tag)}</span>` : null)}
     ${quote ? `<dl class="cite-field"><dt>As printed</dt><dd><div class="cite-quote">${highlighted}</div></dd></dl>` : ""}
 
-    <a class="cite-open" href="${esc(c.document_url || c.filing_url)}" target="_blank" rel="noopener">
+    <a class="cite-open" href="${esc((c.document_url || c.filing_url) + (c.anchor || ""))}" target="_blank" rel="noopener">
       Open the filing ↗</a>`;
 }
 

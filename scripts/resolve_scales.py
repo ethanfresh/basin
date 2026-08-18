@@ -40,7 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         for r in conn.execute(
             """
             SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
-                   v.scale_found, v.status AS verify_status, v.units_nearby
+                   v.scale_found, v.status AS verify_status, v.units_nearby,
+                   v.scale_declared
             FROM fact_current f
             LEFT JOIN fact_verification v ON v.fact_id = f.id
             WHERE f.concept_key IN (?, ?, ?, 'standardized_measure')
@@ -72,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             measure["value"] if measure else None,
             measure["scale_found"] if measure else None,
             (anchor["units_nearby"] or "").split("|") if anchor["units_nearby"] else (),
+            declared_scale=anchor["scale_declared"],
         )
         counts[resolution.status] += 1
         if resolution.status != STATUS_RESOLVED:
@@ -87,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             divisor = resolution.measure_divisor if is_measure else resolution.reserve_divisor
             canonical = (row["value"] / divisor) * conversion.factor
+            # Nothing in this cohort holds 1e11 BOE; past that the unit is
+            # wrong, not the company large.
+            if conversion.canonical != "USD" and abs(canonical) > 1e11:
+                counts["rejected as implausible"] += 1
+                continue
             relabelled = (not is_measure) and unit != row["unit"]
             record_scale(
                 conn,

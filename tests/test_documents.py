@@ -149,8 +149,12 @@ class TestScaleResolution:
     def test_records_what_it_rejected(self):
         from basin.facts.scale import resolve
 
+        # The evidence for a choice includes the readings not taken. The
+        # wording is deliberately not asserted: a reading can now be rejected
+        # on magnitude before the value-per-barrel test runs at all.
         r = resolve(3_617_856_000.0, "MBoe", 1e3, 36_910_000_000.0, 1e3)
-        assert "$/BOE" in r.rejected or "/BOE" in r.rejected
+        assert r.rejected
+        assert "as tagged" in r.rejected
 
     def test_absurd_on_every_reading_stays_ambiguous(self):
         from basin.facts.scale import resolve
@@ -271,3 +275,127 @@ class TestExhibitDetection:
         assert [d["type"] for d in docs] == ["8-K", "EX-99.1", "EX-10.1", "GRAPHIC"]
         # The document cell can carry a trailing "iXBRL" marker.
         assert docs[0]["document"] == "bdco20260522_8k.htm"
+
+
+class TestTableStructure:
+    """D2: a cell without its column header is a number without a meaning."""
+
+    GULFPORT = """
+    <table>
+      <tr><td></td><td></td></tr>
+      <tr><td>December 31, 2025</td></tr>
+      <tr><td>Oil (MMBbl)</td><td>Natural Gas (Bcf)</td><td>NGL (MMBbl)</td><td>Total (Bcfe)</td></tr>
+      <tr><td>Total proved</td><td>19</td><td>2,906</td><td>52</td><td>3,328</td></tr>
+    </table>
+    """
+
+    def test_attaches_the_column_header_to_a_cell(self):
+        from basin.documents.tables import header_for_value, parse_tables
+
+        # This is the header that would have prevented Gulfport's reserves
+        # being stored as barrels: the column says Bcfe.
+        assert header_for_value(parse_tables(self.GULFPORT), "3,328") == (
+            "Total (Bcfe)", "Total proved",
+        )
+
+    def test_headers_align_by_numeric_position_not_raw_index(self):
+        from basin.documents.tables import header_for_value, parse_tables
+
+        # The data row carries a leading label the header row does not, so raw
+        # column indices are offset by one between them.
+        assert header_for_value(parse_tables(self.GULFPORT), "2,906")[0] == (
+            "Natural Gas (Bcf)"
+        )
+
+    def test_a_leading_blank_row_does_not_hide_the_headers(self):
+        from basin.documents.tables import parse_tables
+
+        # A blank spacing row used to flip the parser into "data" mode, after
+        # which every header row was read as data and no cell had a header.
+        table = parse_tables(self.GULFPORT)[0]
+        assert table.column_labels[:2] == ["Oil (MMBbl)", "Natural Gas (Bcf)"]
+
+    def test_a_value_outside_any_table_returns_nothing(self):
+        from basin.documents.tables import header_for_value, parse_tables
+
+        assert header_for_value(parse_tables(self.GULFPORT), "99,999") is None
+
+
+class TestMarkupLookup:
+    """D1/D3: identify the fact, do not match a string that resembles it."""
+
+    DOC = """
+    <html><body>
+      <xbrli:context id="c-1"><xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period></xbrli:context>
+      <xbrli:context id="c-2"><xbrli:entity><xbrli:segment>
+        <xbrldi:explicitMember dimension="srt:ReserveQuantitiesByTypeOfReserveAxis">srt:CrudeOilMember</xbrldi:explicitMember>
+      </xbrli:segment></xbrli:entity><xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period></xbrli:context>
+      <xbrli:unit id="u1"><xbrli:measure>utr:MBoe</xbrli:measure></xbrli:unit>
+      <p>An unrelated 3,617,856 appearing first in the document.</p>
+      <p><ix:nonFraction name="srt:ProvedDevelopedAndUndevelopedReserveNetEnergy"
+         contextRef="c-1" unitRef="u1" scale="3" id="f-9">3,617,856</ix:nonFraction></p>
+      <p><ix:nonFraction name="srt:ProvedDevelopedAndUndevelopedReserveNetEnergy"
+         contextRef="c-2" unitRef="u1" scale="3" id="f-10">1,774,420</ix:nonFraction></p>
+    </body></html>
+    """
+
+    def test_reads_the_declared_scale_rather_than_inferring_it(self):
+        from basin.documents.inline import tagged_figures
+
+        figure = next(f for f in tagged_figures(self.DOC) if f.element_id == "f-9")
+        assert figure.scale == 3
+        assert figure.value == 3_617_856_000.0
+        assert figure.shown == "3,617,856"
+
+    def test_matches_the_tagged_fact_not_the_first_lookalike(self):
+        from basin.documents.inline import match_fact, tagged_figures
+
+        figure = match_fact(
+            tagged_figures(self.DOC),
+            concept_tag="ProvedDevelopedAndUndevelopedReserveNetEnergy",
+            period_end="2025-12-31",
+            value=3_617_856_000.0,
+        )
+        # The plain-text 3,617,856 occurs earlier; a string search would take it.
+        assert figure.element_id == "f-9"
+        assert figure.anchor == "#f-9"
+
+    def test_distinguishes_two_facts_by_product_dimension(self):
+        from basin.documents.inline import match_fact, tagged_figures
+
+        figures = tagged_figures(self.DOC)
+        oil = match_fact(
+            figures,
+            concept_tag="ProvedDevelopedAndUndevelopedReserveNetEnergy",
+            period_end="2025-12-31",
+            value=1_774_420_000.0,
+            product="oil",
+        )
+        assert oil.product == "oil" and oil.element_id == "f-10"
+
+    def test_refuses_a_value_match_against_the_wrong_concept(self):
+        from basin.documents.inline import match_fact, tagged_figures
+
+        assert match_fact(
+            tagged_figures(self.DOC),
+            concept_tag="SomeOtherConcept",
+            period_end="2025-12-31",
+            value=3_617_856_000.0,
+        ) is None
+
+
+class TestSectionAndFolio:
+    def test_heading_split_across_table_cells_is_recovered(self):
+        from basin.documents.text import parse, section_of
+
+        # D5: filings put the number and title in separate cells.
+        doc = parse("<table><tr><td>Item</td><td>1.</td><td>Business</td></tr></table><p>x 1,234</p>")
+        assert section_of(doc.text, doc.text.index("1,234")) == "Item 1. Business"
+
+    def test_printed_folio_is_captured_separately_from_the_page_count(self):
+        from basin.documents.text import parse
+
+        # D6: the number printed on a page need not equal the page's ordinal.
+        doc = parse("<p>text</p><p>6</p><hr><p>more</p><p>7</p>")
+        assert doc.pages == 2
+        assert doc.folio(1) == 6 and doc.folio(2) == 7

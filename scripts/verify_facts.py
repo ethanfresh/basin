@@ -19,9 +19,13 @@ import collections
 import sys
 from pathlib import Path
 
-from basin.documents import find_value, html_to_text, primary_document
+from basin.documents import corpus as corpus_store
+from basin.documents import find_value, primary_document
+from basin.documents.inline import match_fact, tagged_figures
+from basin.documents.tables import header_for_value, parse_tables
+from basin.documents.verify import searchable
 from basin.documents.corpus import fetch as fetch_document
-from basin.documents.text import parse
+from basin.documents.text import parse, section_of, snippet
 from basin.edgar import EdgarClient, NotFound, SECError
 from basin.store import DEFAULT_DB_PATH, connect, record_verification
 
@@ -38,16 +42,118 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_document(client: EdgarClient, cik: str, accession: str):
-    """Return the filing's primary document, parsed with page/line coordinates.
+def load_documents(client: EdgarClient, cik: str, accession: str):
+    """Every stored document for a filing, primary first.
 
-    The corpus holds the document as filed; flattening happens here, on every
-    read, so improving the parser takes effect without refetching anything.
+    D4. Verification used to read only the primary document, leaving 609
+    stored exhibits unsearched -- and the EX-99.1 earnings release is exactly
+    where guidance and per-unit costs are announced. Exhibits are searched
+    after the primary, so a figure in both still cites the filing proper.
     """
-    document = primary_document(cik, accession, client=client)
-    if not document:
-        return None
-    return document, parse(fetch_document(client, cik, accession, document))
+    primary = primary_document(cik, accession, client=client)
+    stored = [
+        d.name
+        for d in corpus_store.stored_documents(accession)
+        if d.name.lower().endswith((".htm", ".html"))
+    ]
+    if primary and primary not in stored:
+        stored.insert(0, primary)
+    ordered = ([primary] if primary in stored else []) + [
+        n for n in stored if n != primary
+    ]
+    if not ordered:
+        return []
+
+    out = []
+    for name in ordered:
+        try:
+            raw = fetch_document(client, cik, accession, name)
+        except (NotFound, SECError):
+            continue
+        out.append((name, raw, parse(raw)))
+    return out
+
+
+def locate_fact(fact: dict, loaded: list) -> dict:
+    """Locate one fact, preferring the filing's markup over a string search.
+
+    D1/D3. The markup identifies the fact -- concept, period, product, unit and
+    declared scale -- so it resolves to the one occurrence that carries it.
+    A string search only knows what the number looks like, and across the store
+    two thirds of those matches were one of several identical candidates.
+    """
+    concept_tag = fact.get("tag")
+    for name, raw, parsed in loaded:
+        if "nonFraction" not in raw:
+            continue
+        figure = match_fact(
+            tagged_figures(raw),
+            concept_tag=concept_tag,
+            period_end=fact["period_end"],
+            value=fact["value"],
+            product=fact.get("product"),
+        )
+        if figure is None:
+            continue
+        line = parsed.locate_raw(figure.start)
+        # D2. The column header governing this figure, as a cross-check on the
+        # unit it claims. Gulfport tags 3,612 Bcf of gas as "bbl"; the header
+        # above it says Natural Gas (Bcf), and that is the honest answer.
+        header = header_for_value(parse_tables(raw), figure.shown)
+        return {
+            "status": "found",
+            "method": "markup",
+            "units_nearby": header[0] or None if header else None,
+            "document": name,
+            "printed": figure.shown,
+            "scale_found": 10**figure.scale if figure.scale else 1.0,
+            "scale_label": f"declared 10^{figure.scale}" if figure.scale else "as tagged",
+            "scale_declared": figure.scale,
+            "hits": 1,
+            "anchor": figure.anchor,
+            "source_span": snippet(parsed.text, line.start, line.end) if line else None,
+            "char_offset": line.start if line else None,
+            "line_no": line.line if line else None,
+            "page": line.page if line else None,
+            "folio": parsed.folio(line.page) if line else None,
+            "section": section_of(parsed.text, line.start) if line else None,
+            "line_text": line.text[:400] if line else None,
+        }
+
+    # Fallback: the filer did not tag this figure, so match the printed string.
+    for name, raw, parsed in loaded:
+        match = find_value(parsed.text, fact["value"])
+        if match is None:
+            continue
+        line = parsed.locate(match.offset)
+        return {
+            "status": "found",
+            "method": "text",
+            "document": name,
+            "printed": match.printed,
+            "scale_found": match.scale,
+            "scale_label": match.scale_label,
+            "hits": match.hits,
+            "source_span": match.source_span,
+            "char_offset": match.offset,
+            "line_no": getattr(match, "line", None),
+            "page": line.page if line else None,
+            "folio": parsed.folio(line.page) if line else None,
+            "section": getattr(match, "section", None),
+            "line_text": line.text[:400] if line else None,
+            "units_nearby": "|".join(getattr(match, "units_nearby", ()) or ()) or None,
+        }
+
+    # D7. "Cannot be searched for" is not the same claim as "absent from the
+    # filing", and recording the second when the first is true reads as an
+    # accusation against the filer.
+    if not searchable(fact["value"]):
+        return {
+            "status": "unverifiable",
+            "document": loaded[0][0] if loaded else None,
+            "note": "value has too few significant digits to search for",
+        }
+    return {"status": "not_found", "document": loaded[0][0] if loaded else None}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,19 +186,20 @@ def main(argv: list[str] | None = None) -> int:
 
     counts: collections.Counter = collections.Counter()
     scales: collections.Counter = collections.Counter()
+    methods: collections.Counter = collections.Counter()
 
     try:
         with EdgarClient() as client:
             for n, ((cik, accession), group) in enumerate(sorted(by_accession.items()), 1):
                 try:
-                    loaded = load_document(client, cik, accession)
+                    loaded = load_documents(client, cik, accession)
                 except (NotFound, SECError) as exc:
                     for fact in group:
                         record_verification(conn, fact["id"], "unavailable", note=str(exc)[:200])
                         counts["unavailable"] += 1
                     continue
 
-                if loaded is None:
+                if not loaded:
                     for fact in group:
                         record_verification(
                             conn, fact["id"], "unavailable", note="no primary document"
@@ -100,38 +207,14 @@ def main(argv: list[str] | None = None) -> int:
                         counts["unavailable"] += 1
                     continue
 
-                document, parsed = loaded
-                text = parsed.text
                 for fact in group:
-                    match = find_value(text, fact["value"])
-                    if match is None:
-                        record_verification(
-                            conn, fact["id"], "not_found", document=document
-                        )
-                        counts["not_found"] += 1
-                        continue
-                    record_verification(
-                        conn,
-                        fact["id"],
-                        "found",
-                        document=document,
-                        printed=match.printed,
-                        scale_found=match.scale,
-                        scale_label=match.scale_label,
-                        hits=match.hits,
-                        source_span=match.source_span,
-                        char_offset=match.offset,
-                        line_no=match.line,
-                        section=match.section,
-                        units_nearby="|".join(match.units_nearby) or None,
-                        # Page and the full line are what make the citation
-                        # actionable: a reader opens the filing at that page
-                        # and scans one line rather than 3MB of HTML.
-                        page=(located.page if (located := parsed.locate(match.offset)) else None),
-                        line_text=(located.text[:400] if located else None),
-                    )
-                    counts["found"] += 1
-                    scales[match.scale_label] += 1
+                    outcome = locate_fact(fact, loaded)
+                    record_verification(conn, fact["id"], **outcome)
+                    counts[outcome["status"]] += 1
+                    if outcome["status"] == "found":
+                        methods[outcome.get("method") or "text"] += 1
+                        if outcome.get("scale_label"):
+                            scales[outcome["scale_label"]] += 1
                 conn.commit()
                 print(f"  [{n}/{len(by_accession)}] {accession}  {len(group)} facts", flush=True)
     except SECError as exc:
@@ -145,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n{'=' * 56}\nverified {total} facts across {len(by_accession)} filings")
     for status, n in counts.most_common():
         print(f"  {status:<14}{n:>5}  {n / total:>5.0%}")
+    if methods:
+        print("\nhow each figure was located:")
+        for label, n in methods.most_common():
+            print(f"  {label:<40}{n:>5}  {n / max(1, sum(methods.values())):>5.0%}")
     if scales:
         print("\nscale the document printed the figure at:")
         for label, n in scales.most_common():

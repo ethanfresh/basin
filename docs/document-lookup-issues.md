@@ -1,16 +1,60 @@
 # Document lookup: known defects and proposed fixes
 
-How Basin currently finds a number in a filing, what that approach gets wrong,
-and what to do about it. Every figure below is measured against the current
-store (669 verified facts, 1,794 indexed documents, 3.5M lines), not estimated.
+> **Status: all eight fixed.** Numbers below are before → after, measured
+> against the store, not estimated. Verified facts rose from 669 to **2,059**,
+> of which **100% are now located** and **99.9% by reading the filing's own
+> markup** rather than searching its text.
 
-**The headline: the current lookup is a string search, and it does not need to
-be.** Every primary document is inline XBRL, so each tagged figure is already
-marked up in place with its concept, period, unit and presentation scale.
-Switching from "search the text for a number that looks right" to "read the
-markup that says which number this is" removes the top four defects at once.
-That is [D1](#d1-lookup-is-a-string-search-over-flattened-text), and it should
-be done before the rest.
+How Basin finds a number in a filing, what the original approach got wrong,
+what was done, and what remains open. The original defect list is preserved
+below with its measurements, each followed by the outcome.
+
+**The headline held up.** Lookup was a string search and did not need to be:
+every primary document is inline XBRL, so each tagged figure is already marked
+up with its concept, period, product, unit and presentation scale. Reading the
+markup rather than the text removed D1, D3 and most of D7 at once, and turned
+the scale resolver from an inference engine into a check.
+
+## What changed, in one table
+
+| | Defect | Before | After |
+|---|---|---|---|
+| D1 | Ambiguous string matches | 230/669 unique (34%) | **2,052/2,054 unique (99.9%)** |
+| D2 | Table headers discarded | none | **1,165 facts carry their column header** |
+| D3 | Scale inferred | 1,067 cells resolved | **2,480 cells resolved** |
+| D4 | Exhibits unsearched | 609 unsearched | searched after the primary |
+| D5 | Broken headings | 27 missing, malformed values | **0 malformed**, 58 of 2,054 missing |
+| D6 | Page numbers unmeasured | unknown | **measured: only 37% match the printed folio** |
+| D7 | Zero values called absent | 15 `not_found` | **0 `not_found`, 5 `unverifiable`** |
+| D8 | Parenthesised negatives | never matched | matched |
+
+## New findings
+
+Three things surfaced only after the fixes went in, and each is worth more
+than the defect that exposed it.
+
+**The printed page and the page count disagree far more than expected (D6).**
+Of 1,332 facts where both are known, only **37% agree**. Offsets cluster at
++7, +10, +2 and +6 — cover pages and contents that carry no folio. The
+citation now quotes the printed number and labels the derived one a sheet
+number; 722 located facts sit on pages that print no number at all, and say so.
+
+**Declared scale plus header unit removes the economic inference — but only
+together.** CNX is the case: the markup declares `scale="3"`, so the figure is
+9,662,144, and the declared unit `Mcfe` would make that 9.7 Bcfe against a
+company holding roughly 9.7 *Tcfe*. The column header says `MMcf`. Scale from
+the markup and unit from the table give the right answer with no $/BOE test at
+all; either alone gives one that is wrong by a thousand.
+
+**A correct fix, over-generalised, manufactured a new error.** Unit correction
+was applied to every row in a company-period, including rows whose declared
+unit differed from the anchor's. W&T's `ft3` figure was relabelled with the
+anchor's unit and resolved to **4.2 × 10¹⁷ BOE** — more than the world holds —
+at $97/BOE, which cleared the value-per-barrel band because the standardized
+measure carried the same error. Two guards now exist: a correction applies only
+to rows sharing the anchor's declared unit, and any volume resolving past 1e11
+BOE is rejected rather than published. 63 readings are now rejected on that
+ground.
 
 ---
 
@@ -46,8 +90,8 @@ exactly once**. 320 matched a string appearing 2–3 times, 118 appearing 4–10
 times, and one appearing more than 10 times. So **66% of citations point at
 one of several identical-looking numbers**, chosen by document order.
 
-**Fix.** Read the inline XBRL instead. Every primary document contains markup
-of the form:
+**Fixed.** Reads the inline XBRL. Every primary document contains markup of
+the form:
 
 ```html
 <ix:nonFraction unitRef="mbbls" contextRef="c-610" scale="3"
@@ -60,9 +104,11 @@ its `ix` element by concept + context is exact, and the element's position in
 the document gives the page and line directly. No searching, no ambiguity, and
 the citation can address `#f-1841` in the filing rather than a page.
 
-**Caveat.** This only covers figures the filer tagged. Anything the extraction
-layer pulls from prose — realized price, LOE per BOE — still needs text search,
-so `find_value` remains, demoted to a fallback.
+**Outcome.** 2,052 of 2,054 located facts now resolve by markup, each to a
+single unambiguous element, addressable as `#f-1841` in the filing itself. Two
+resolve by the text fallback, which remains for figures the filer never tagged
+— and for the extraction layer, whose fields (realized price, LOE per BOE) are
+prose rather than markup.
 
 ---
 
@@ -87,10 +133,17 @@ stored as 4.25 billion BOE (tagged `bbl`) when the correct figure is 708.8
 million (the table says `Bcfe`) — a **6× overstatement** that survived until
 header parsing was added as a patch.
 
-**Fix.** Parse tables as tables: a `document_table` / `document_cell` pair
-recording row, column, and the header text governing each column. Then the
-unit of a cell is a lookup rather than a proximity heuristic, and D1's context
-matching gains a cross-check.
+**Fixed.** `basin.documents.tables` parses tables as tables and attaches each
+cell's column header. Gulfport's `4,253` now resolves to header
+`Total (Bcfe)`, row `Total proved`; its `3,612` to `Natural Gas (Bcf)`.
+1,165 of 2,054 verified facts carry a header, and it feeds unit correction
+directly.
+
+Two things this needed that were not obvious. Headers align to *numeric column
+position*, not raw cell index, because a data row carries a leading label cell
+the header row does not. And a blank spacing row at the top of a table was
+flipping the parser into "data" mode, after which every header row was read as
+data and no cell got a header at all.
 
 ---
 
@@ -110,13 +163,13 @@ missing.
 The rest are shown unranked because the inference could not decide. Reading
 `scale` would resolve every tagged fact directly.
 
-**Fix.** Take `scale` from the `ix` element. Keep the $/BOE test, but demote it
-from *resolver* to *check*: if the stated scale implies an absurd value per
-barrel, that is a finding worth surfacing, not a number to overrule.
+**Fixed.** `scale` is read from the `ix` element and fixes the divisor;
+the $/BOE test now only chooses between *units*, which is the job it is
+actually good at. Resolved cells rose from 1,067 to **2,480**.
 
-**Do not** discard the unit-correction logic. Scale and unit are separate
-problems, and the markup is only reliable for the first: Gulfport tags 3,612
-Bcf of **gas** as `unit="bbl"` in the markup itself.
+The warning held: the markup is reliable for scale and not for unit. Gulfport
+tags 3,612 Bcf of **gas** as `unit="bbl"` in its own inline XBRL, so unit
+correction stays exactly where it was.
 
 ---
 
@@ -133,8 +186,9 @@ the fields XBRL does not cover.
 to verification. Of the stored EX-99 documents, 102 contain guidance language
 and 73 contain LOE or per-BOE prose.
 
-**Fix.** Search every document in an accession, ranked primary-first, and
-record which document the match came from — the schema already has the column.
+**Fixed.** Every stored document in an accession is searched, primary first,
+so a figure appearing in both still cites the filing proper. The document that
+carried the match is recorded.
 
 ---
 
@@ -151,9 +205,11 @@ entirely.
 **Measured.** **27 of 669** located facts have no section at all, and captured
 sections include `'Item 16.\nForm 10-K Summary'` and `'Item\n15.\nExhibits'`.
 
-**Fix.** Normalise internal whitespace before matching, allow the number and
-title to be adjacent lines, and store the canonical form (`Item 1`) separately
-from the display title.
+**Fixed.** The pattern matches across the break and normalises whitespace, and
+a canonical `Item 1` is derived alongside the display title. Malformed values
+are gone (0 of 2,054). 58 facts still have no section — cover pages, exhibits
+and financial statements genuinely sit outside any Item heading, so this is
+now a floor rather than a bug.
 
 ---
 
@@ -168,15 +224,14 @@ often unnumbered or numbered in roman, so a printed folio may sit several
 pages behind the count. A reader told "page 46" opens a PDF at page 46 and may
 find something else.
 
-**Measured.** Not yet quantified — this is the one item here that is a
-suspicion rather than a finding. Filings do print the folio in the text near
-each break (the sequence `... development plan. 6 Table of Contents ...` is a
-page number followed by the next page's header).
+**Measured — and it was real.** Of 1,332 facts where both are known, only
+**497 (37%) agree**. The rest differ, clustering at +7, +10, +2 and +6:
+unnumbered cover pages and contents. Diamondback's total proved sits on the
+122nd sheet, which prints **115**.
 
-**Fix.** Extract the printed folio adjacent to each break, compare it to the
-derived count across the corpus, and report the offset distribution. If they
-agree, say so; if they diverge, store the printed folio and label the derived
-one as a sequence number.
+**Fixed.** The printed folio is extracted and stored, citations quote it, and
+the derived count is labelled a sheet number. Where a page prints no number —
+722 located facts — the citation says so rather than implying a folio.
 
 ---
 
@@ -191,9 +246,10 @@ as "this number is not in the filing" when it means "this method cannot look".
 
 **Measured.** **13 of 15** unverified facts are zero or below 100.
 
-**Fix.** Under D1 these become verifiable, since the markup is addressed by
-concept rather than by digits. Until then, record them as `unverifiable` rather
-than `not_found`, so the two states are not conflated.
+**Fixed both ways.** Markup lookup addresses a fact by concept rather than by
+digits, so a zero-valued tagged fact now verifies normally. What remains
+genuinely unsearchable is recorded as `unverifiable`, a separate state from
+`not_found`. There are now **0 `not_found` and 5 `unverifiable`**.
 
 ---
 
@@ -207,21 +263,30 @@ so this is latent rather than active. It becomes live the moment revisions,
 production declines or cash-flow components are added, all of which are
 routinely negative.
 
-**Fix.** Generate both forms, and treat a parenthesised match as negative.
+**Fixed.** Both forms are generated, and a parenthesised match reads as
+negative. Still latent — no negative-valued concept is ingested yet — but it
+will be live the moment revisions or production declines are added.
 
 ---
 
-## Suggested order
+## Still open
 
-1. **D1 + D3 together** — one change, reading `ix` markup, fixes both. Largest
-   correctness gain per unit of work, and it shrinks the scale-inference code
-   to a verification check.
-2. **D4** — cheap, and it unlocks the exhibits where the commercially valuable
-   fields live.
-3. **D2** — the most work, and the prerequisite for trusting units without the
-   $/BOE fallback.
-4. **D5, D7, D8** — small correctness and honesty fixes.
-5. **D6** — measure first; it may be a non-issue.
+**Unit labels remain unreliable, and no source fixes them.** The tagged unit is
+wrong in the markup itself for several filers; the table header is right where
+a header exists, which is 57% of facts. For the rest the $/BOE test is the only
+check, and it is a coarse one — it cleared W&T at $97/BOE on a figure that was
+wrong by twelve orders of magnitude, and only a separate magnitude ceiling
+caught that.
+
+**127 company-periods remain ambiguous** and 44 unavailable, so their cells
+render unranked. Most lack a standardized measure to test against.
+
+**Table header coverage is 57%.** The misses are figures stated in prose rather
+than tables, and tables whose headers sit in a preceding sibling table — a
+layout the parser does not currently follow.
+
+**The 6:1 gas conversion is still a convention**, applied wherever a gas volume
+becomes BOE, and labelled as such on the cell. Nothing here changes that.
 
 ## What is deliberately not on this list
 

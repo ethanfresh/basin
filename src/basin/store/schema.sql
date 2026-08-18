@@ -332,6 +332,14 @@ CREATE TABLE IF NOT EXISTS fact_verification (
     section      TEXT,               -- the "Item N." heading it sits under
     line_text    TEXT,               -- the whole line, for display
     units_nearby TEXT,               -- units read from the table header / prose
+    -- How the figure was located. 'markup' reads the filing's own inline
+    -- XBRL, which identifies the fact rather than matching a string that
+    -- looks like it; 'text' is the string-search fallback for anything the
+    -- filer did not tag.
+    method       TEXT,
+    anchor       TEXT,               -- e.g. #f-1841, addresses the figure itself
+    folio        INTEGER,            -- the page number printed on the page
+    scale_declared INTEGER,          -- from the markup, not inferred
     note         TEXT,
     checked_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );

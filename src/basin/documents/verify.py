@@ -34,6 +34,18 @@ SCALES: tuple[tuple[float, str], ...] = (
 
 MAX_HITS_FOR_CONFIDENCE = 3
 
+# D7. Below this many significant digits a string search proves nothing: "7"
+# matches half a filing. Such a fact is *unsearchable by this method*, which is
+# a different statement from "absent from the filing", and conflating the two
+# reads as an accusation against the filer.
+MIN_SIGNIFICANT_DIGITS = 3
+
+
+def searchable(value: float) -> bool:
+    """Whether a string search over this value can mean anything."""
+    digits = f"{abs(value):.2f}".replace(".", "").rstrip("0")
+    return len(digits.lstrip("0")) >= MIN_SIGNIFICANT_DIGITS and value != 0
+
 
 @dataclass(frozen=True)
 class Match:
@@ -78,6 +90,14 @@ def _candidates(value: float) -> list[tuple[str, float, str]]:
                 continue
             seen.add(form)
             out.append((form, factor, label))
+            # D8. Filings write negatives in parentheses, never with a minus.
+            # Latent until a negative-valued concept is ingested -- revisions,
+            # declines and cash-flow components are routinely negative.
+            if form.startswith("-"):
+                bracketed = f"({form[1:]})"
+                if bracketed not in seen:
+                    seen.add(bracketed)
+                    out.append((bracketed, factor, label))
     # Longer strings are more specific, so they are tried first.
     out.sort(key=lambda t: -len(t[0]))
     return out

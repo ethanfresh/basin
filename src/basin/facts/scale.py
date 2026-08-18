@@ -43,6 +43,15 @@ MAX_USD_PER_BOE = 120.0
 TYPICAL_MIN_USD_PER_BOE = 1.5
 TYPICAL_MAX_USD_PER_BOE = 50.0
 
+# No US producer holds this much. World proved reserves are around 1.7e12
+# barrels and the largest filer in this cohort is under 5e9 BOE, so anything
+# past 1e11 is an artefact of a wrong unit rather than a large company.
+#
+# The value-per-barrel band alone does not catch these: W&T resolved to
+# 4.2e17 BOE at $97/BOE, which cleared the wide band because the standardized
+# measure was scaled by the same error.
+MAX_PLAUSIBLE_BOE = 1e11
+
 STATUS_RESOLVED = "resolved"
 STATUS_AMBIGUOUS = "ambiguous"
 STATUS_UNAVAILABLE = "unavailable"
@@ -57,6 +66,7 @@ class Candidate:
     label: str
     unit: str = ""
     from_document: bool = False
+    canonical_unit_is_volume: bool = True
     unit: str = ""
 
 
@@ -103,9 +113,10 @@ def candidates(
             continue
         suffix = "" if origin == "declared" else f", {origin}"
         from_document = origin != "declared"
+        is_volume = conversion.canonical != "USD"
         out.append(
             Candidate(1.0, value * conversion.factor, f"as tagged{suffix}",
-                      candidate_unit, from_document)
+                      candidate_unit, from_document, is_volume)
         )
         if scale and scale != 1.0:
             out.append(
@@ -115,6 +126,7 @@ def candidates(
                     f"as printed{suffix}",
                     candidate_unit,
                     from_document,
+                    is_volume,
                 )
             )
     return out
@@ -127,6 +139,7 @@ def resolve(
     measure_value: float | None,
     measure_scale: float | None,
     header_units: tuple[str, ...] | list[str] = (),
+    declared_scale: int | None = None,
 ) -> Resolution:
     """Choose the reserve and standardized-measure readings that agree.
 
@@ -134,7 +147,16 @@ def resolve(
     actually report. Where several combinations qualify, the one closest to
     the middle of the band wins and the rest are recorded as rejected.
     """
-    reserves = candidates(reserve_value, reserve_unit, reserve_scale, header_units)
+    # D3. When the filing's markup declares the scale, that is not something
+    # to infer around: the divisor is fixed and only the unit stays open. The
+    # value-per-barrel test then does the job it is actually good at --
+    # choosing between units -- instead of standing in for a stated fact.
+    effective_scale = (10**declared_scale) if declared_scale else reserve_scale
+    reserves = candidates(
+        reserve_value, reserve_unit, effective_scale, header_units
+    )
+    if declared_scale is not None:
+        reserves = [c for c in reserves if c.divisor == (10**declared_scale)] or reserves
     if not reserves:
         return Resolution(STATUS_UNAVAILABLE, note=f"no canonical form for {reserve_unit}")
     if measure_value is None:
@@ -158,6 +180,9 @@ def resolve(
     for r in reserves:
         for m in measures:
             if r.canonical_value <= 0:
+                continue
+            if r.canonical_unit_is_volume and r.canonical_value > MAX_PLAUSIBLE_BOE:
+                rejected.append(f"{r.label}={r.canonical_value:,.0f} BOE, implausible")
                 continue
             ratio = m.canonical_value / r.canonical_value
             if MIN_USD_PER_BOE <= ratio <= MAX_USD_PER_BOE:
