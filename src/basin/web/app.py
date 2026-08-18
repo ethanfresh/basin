@@ -10,8 +10,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from basin.store import queries
 from basin.store.db import DEFAULT_DB_PATH
@@ -45,20 +46,25 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
-@app.get("/")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
 @app.head("/")  # supervisors probe with HEAD; a bare @get answers 405
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index(request: Request) -> HTMLResponse:
+    """Serve the page with its social-card URLs made absolute.
+
+    Open Graph requires absolute URLs -- a relative og:image is simply
+    dropped by every scraper -- and the host is only known per request, so
+    the base is substituted here rather than hardcoded into the file.
+    """
+    html = (STATIC_DIR / "index.html").read_text()
+    return HTMLResponse(html.replace("{{BASE_URL}}", str(request.base_url).rstrip("/")))
 
 
 @app.get("/favicon.ico")
-def favicon() -> Response:
-    dot = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-        '<rect width="32" height="32" fill="#000"/>'
-        '<circle cx="16" cy="16" r="7" fill="#00e585"/></svg>'
-    )
-    return Response(content=dot, media_type="image/svg+xml")
+def favicon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "favicon-32.png", media_type="image/png")
 
 
 @app.get("/api/summary")

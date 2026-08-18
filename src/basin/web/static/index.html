@@ -3,7 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Basin</title>
+<title>Basin — peer-comparable oil & gas data from SEC filings</title>
+<meta name="description" content="Peer-comparable financial data for US oil &amp; gas producers, extracted from SEC filings, with a citation behind every number.">
+<meta name="theme-color" content="#000000">
+
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/static/favicon-180.png">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Basin">
+<meta property="og:title" content="Basin — peer-comparable oil &amp; gas data from SEC filings">
+<meta property="og:description" content="Reserves, production, realized prices and capex for US producers, extracted from SEC filings with a citation behind every number.">
+<meta property="og:url" content="{{BASE_URL}}/">
+<meta property="og:image" content="{{BASE_URL}}/static/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Basin — peer-comparable financial data for US oil and gas producers.">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Basin — peer-comparable oil &amp; gas data from SEC filings">
+<meta name="twitter:description" content="Reserves, production, realized prices and capex for US producers, extracted from SEC filings with a citation behind every number.">
+<meta name="twitter:image" content="{{BASE_URL}}/static/og.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -54,20 +75,30 @@
   }
 
   .wordmark {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 0.2em;
     text-transform: uppercase;
     white-space: nowrap;
   }
-  .wordmark::after {
-    content: "";
-    display: inline-block;
-    width: 5px; height: 5px;
-    margin-left: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-    vertical-align: middle;
+  .wordmark:hover { opacity: 0.7; }
+  .wordmark:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+
+  .wordmark svg {
+    width: 15px; height: 15px;
+    color: var(--accent);
+    flex: none;
   }
 
   nav { display: flex; gap: 4px; }
@@ -436,7 +467,14 @@
 <body>
 
 <header>
-  <span class="wordmark">Basin</span>
+  <button class="wordmark" id="home" title="Back to panel">
+    <svg viewBox="0 0 64 64" aria-hidden="true" focusable="false"><g fill="currentColor">
+      <rect x="12" y="17" width="40" height="6" rx="3"/>
+      <rect x="17" y="27" width="30" height="6" rx="3"/>
+      <rect x="22" y="37" width="20" height="6" rx="3"/>
+      <rect x="27" y="47" width="10" height="6" rx="3"/>
+    </g></svg>Basin
+  </button>
   <nav>
     <button data-view="panel" aria-selected="true">Panel</button>
     <button data-view="coverage" aria-selected="false">Coverage</button>
@@ -772,16 +810,20 @@ async function loadQuality() {
 const loaders = { coverage: loadCoverage, companies: loadCompanies, quality: loadQuality };
 const loaded = new Set(["panel"]);
 
-document.querySelectorAll("nav button").forEach((btn) => {
-  btn.addEventListener("click", async () => {
-    const view = btn.dataset.view;
-    document.querySelectorAll("nav button").forEach((b) =>
-      b.setAttribute("aria-selected", String(b === btn)));
-    document.querySelectorAll("main section").forEach((s) =>
-      s.hidden = s.id !== `view-${view}`);
-    if (!loaded.has(view)) { await loaders[view](); loaded.add(view); }
-  });
-});
+async function showView(view) {
+  document.querySelectorAll("nav button").forEach((b) =>
+    b.setAttribute("aria-selected", String(b.dataset.view === view)));
+  document.querySelectorAll("main section").forEach((s) =>
+    s.hidden = s.id !== `view-${view}`);
+  if (!loaded.has(view)) { await loaders[view](); loaded.add(view); }
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+document.querySelectorAll("nav button").forEach((btn) =>
+  btn.addEventListener("click", () => showView(btn.dataset.view)));
+
+// The wordmark is the way home, as it is on any other site.
+$("#home").addEventListener("click", () => showView("panel"));
 
 $("#concept").addEventListener("change", loadPeriods);
 $("#period").addEventListener("change", loadPanel);
