@@ -6,6 +6,8 @@ All offline — the HTML shapes here are copied from real filings.
 
 from __future__ import annotations
 
+import pytest
+
 from basin.documents import find_value, html_to_text
 from basin.documents.locate import document_url, primary_document
 
@@ -84,3 +86,75 @@ class TestLocate:
     def test_primary_document_without_cache_or_client_is_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("basin.documents.locate.SUBMISSIONS_CACHE", tmp_path)
         assert primary_document("0001539838", "0001539838-26-000010") is None
+
+
+class TestUnitConversion:
+    def test_barrels_and_boe_are_the_same_size(self):
+        from basin.facts.units import conversion_for
+
+        assert conversion_for("bbl").factor == 1.0
+        assert conversion_for("MBoe").factor == 1e3
+        assert conversion_for("MMBoe").factor == 1e6
+
+    def test_gas_conversion_is_flagged_as_a_convention(self):
+        from basin.facts.units import conversion_for
+
+        gas = conversion_for("Bcfe")
+        assert gas.is_convention and "6" in gas.note
+        # 1 Bcf = 1e9 cubic feet, at 6,000 cubic feet per BOE.
+        assert gas.factor == pytest.approx(1e9 / 6_000)
+
+    def test_rate_units_have_no_canonical_form(self):
+        from basin.facts.units import conversion_for
+
+        assert conversion_for("USD/bbl") is None
+
+    def test_normalise_applies_scale_then_unit(self):
+        from basin.facts.units import normalise
+
+        value, unit, _ = normalise(2_521_028_000.0, "MBoe", 1e3)
+        assert unit == "BOE"
+        assert value == pytest.approx(2_521_028_000.0)
+
+
+class TestScaleResolution:
+    """Verified scale gives two candidate readings; economics picks one."""
+
+    def test_picks_the_printed_reading_when_as_tagged_is_absurd(self):
+        from basin.facts.scale import resolve
+
+        # Diamondback: as tagged implies $0.01/BOE, descaled implies $10.20.
+        r = resolve(3_617_856_000.0, "MBoe", 1e3, 36_910_000_000.0, 1e3)
+        assert r.status == "resolved"
+        assert r.reserve_divisor == 1e3
+        assert r.usd_per_boe == pytest.approx(10.2, abs=0.1)
+
+    def test_keeps_the_tagged_reading_when_it_is_the_sensible_one(self):
+        from basin.facts.scale import resolve
+
+        # CNX verifies at the same scale as Diamondback and needs the
+        # opposite answer, which is why the scale alone cannot decide.
+        r = resolve(9_662_144_000.0, "Mcfe", 1e3, 5_066_306_000.0, 1e3)
+        assert r.status == "resolved"
+        assert r.reserve_divisor == 1.0
+        assert r.usd_per_boe == pytest.approx(3.15, abs=0.1)
+
+    def test_without_a_standardized_measure_nothing_is_decided(self):
+        from basin.facts.scale import resolve
+
+        r = resolve(1_000.0, "MBoe", 1e3, None, None)
+        assert r.status == "unavailable"
+        assert r.reserve_divisor is None
+
+    def test_records_what_it_rejected(self):
+        from basin.facts.scale import resolve
+
+        r = resolve(3_617_856_000.0, "MBoe", 1e3, 36_910_000_000.0, 1e3)
+        assert "$/BOE" in r.rejected or "/BOE" in r.rejected
+
+    def test_absurd_on_every_reading_stays_ambiguous(self):
+        from basin.facts.scale import resolve
+
+        r = resolve(1.0, "MBoe", 1e3, 1e15, 1.0)
+        assert r.status == "ambiguous"
+        assert r.reserve_divisor is None

@@ -6,6 +6,7 @@ from basin.store.db import (
     record_coverage,
     record_verification,
     record_filing,
+    record_scale,
     schema_sql,
     upsert_company,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "record_coverage",
     "record_verification",
     "record_filing",
+    "record_scale",
     "schema_sql",
     "upsert_company",
 ]

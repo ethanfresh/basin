@@ -342,3 +342,50 @@ SELECT f.*,
        v.document    AS verify_document
 FROM fact_current f
 LEFT JOIN fact_verification v ON v.fact_id = f.id;
+
+
+-- The resolved magnitude of a fact, in canonical units.
+--
+-- Two steps stand behind every row: the scale the document was found to print
+-- the figure at (measured, in fact_verification), and which of the resulting
+-- candidate readings is the real one (inferred here, by testing the implied
+-- value per barrel against the standardized measure).
+--
+-- The second step is inference, so the evidence travels with it: the ratio it
+-- turned on, and the readings it rejected. `value` in `fact` is never
+-- touched -- the filer's number stays exactly as filed, and this sits beside
+-- it.
+CREATE TABLE IF NOT EXISTS fact_scale (
+    fact_id         INTEGER PRIMARY KEY REFERENCES fact(id),
+    divisor         REAL NOT NULL,     -- stored value / this = as the filing prints it
+    canonical_value REAL NOT NULL,
+    canonical_unit  TEXT NOT NULL,     -- BOE or USD
+    conversion_note TEXT,              -- set when a convention was applied (6:1 gas)
+    basis           TEXT NOT NULL,     -- how the divisor was decided
+    usd_per_boe     REAL,
+    rejected        TEXT,
+    note            TEXT,
+    resolved_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+
+-- The panel, in units that can actually be compared across filers.
+--
+-- Only facts whose magnitude has been resolved appear with a canonical value.
+-- Everything else keeps a NULL there rather than a guess, because a cell that
+-- is wrong by a factor of a thousand while looking authoritative is the
+-- failure this whole apparatus exists to prevent.
+CREATE VIEW IF NOT EXISTS fact_canonical AS
+SELECT f.*,
+       s.canonical_value,
+       s.canonical_unit,
+       s.divisor        AS scale_divisor,
+       s.conversion_note,
+       s.basis          AS scale_basis,
+       s.usd_per_boe,
+       v.status         AS verify_status,
+       v.printed        AS verify_printed,
+       v.source_span    AS verify_span
+FROM fact_current f
+LEFT JOIN fact_scale s ON s.fact_id = f.id
+LEFT JOIN fact_verification v ON v.fact_id = f.id;

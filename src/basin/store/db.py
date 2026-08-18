@@ -221,3 +221,36 @@ def record_verification(
         (fact_id, status, document, printed, scale_found, scale_label,
          hits, source_span, note),
     )
+
+
+def record_scale(
+    conn: sqlite3.Connection,
+    fact_id: int,
+    divisor: float,
+    canonical_value: float,
+    canonical_unit: str,
+    basis: str,
+    *,
+    conversion_note: str | None = None,
+    usd_per_boe: float | None = None,
+    rejected: str | None = None,
+    note: str | None = None,
+) -> None:
+    """Record the resolved magnitude of one fact, with its evidence."""
+    conn.execute(
+        """
+        INSERT INTO fact_scale (fact_id, divisor, canonical_value, canonical_unit,
+                                conversion_note, basis, usd_per_boe, rejected, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fact_id) DO UPDATE SET
+            divisor = excluded.divisor,
+            canonical_value = excluded.canonical_value,
+            canonical_unit = excluded.canonical_unit,
+            conversion_note = excluded.conversion_note,
+            basis = excluded.basis, usd_per_boe = excluded.usd_per_boe,
+            rejected = excluded.rejected, note = excluded.note,
+            resolved_at = datetime('now')
+        """,
+        (fact_id, divisor, canonical_value, canonical_unit, conversion_note,
+         basis, usd_per_boe, rejected, note),
+    )

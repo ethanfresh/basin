@@ -221,7 +221,15 @@ The first live instance of this turned up in the Facts layer, before any languag
 
   The sum check is the one that earns its place, because it localises the fault. Antero's components sum to **17,261 MMcfe** against a total reading **17,261,000** — identical digits, a factor of a thousand apart. Continental's components sum to 2.68 million MBoe against a total of 745 thousand; the two components agree with each other, so it is the total's tag (`ProvedDevelopedAndUndevelopedReserveNetEnergy`) that does not mean what the registry assumed.
 
-Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, and the dashboard groups a peer table by declared unit so it never renders a ranking it cannot support. **Cross-unit normalisation of volume concepts needs per-filer calibration and is deliberately not applied.**
+Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, and the stored `value` is never touched: a resolved magnitude sits beside it in `fact_scale`, with the evidence that produced it.
+
+**Resolving a magnitude takes two steps, and they are different in kind.** The scale the filing prints a figure at is *measured*, by finding the value in the document. That leaves two candidate readings — as tagged, and as printed — and choosing between them is *inference*. Verified scale alone cannot decide it: Diamondback and CNX both verify at a scale of 1,000, and the correct reading is the opposite one in each case.
+
+What decides it is an economic identity. The standardized measure is a discounted present value of the same reserves, in dollars, so one divided by the other is a value per barrel — and that number has a range no real producer falls outside. Diamondback reads $10.20/BOE descaled against $0.01 as tagged; CNX reads $3.15/BOE as tagged against $3,146 descaled. The monetary side anchors it, because XBRL monetary facts are reliably tagged in dollars while volume unit labels are not.
+
+Every resolution records the ratio it turned on and the readings it rejected, and a cell whose candidates are all implausible stays unresolved rather than guessed at.
+
+**What this still does not fix:** scale resolution trusts the *unit family*. Gulfport's reserves are tagged in `bbl` and resolve to 4.25 billion BOE at $0.80/BOE — arithmetically self-consistent, economically odd for a gas producer with roughly 4 Tcfe. A mislabelled unit family is invisible to this method, so cells implying a value per barrel outside the usual range carry the ratio as a warning.
 
 This is the sharpest form of the comparability problem so far, and it lands in the Facts layer — the one that was supposed to be the easy, exact one. XBRL removes the risk of a *fabricated* number; it does not deliver a *comparable* one.
 
@@ -256,6 +264,7 @@ python scripts/load_cohort.py          # tickers and cohort metadata
 
 # Check stored values against the documents they cite
 python scripts/verify_facts.py --limit 700
+python scripts/resolve_scales.py       # canonical magnitudes in BOE / USD
 
 pytest
 ```
@@ -280,6 +289,8 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 
 ### Done
 
+- [x] **A comparable panel** — every filer ranked in one column, in BOE or USD. Resolving a magnitude takes two steps: the scale the document prints the figure at (measured), then which of the resulting readings is real (inferred, by testing the implied value per barrel against the standardized measure). 291 company-periods resolve, 83 stay ambiguous, and unresolved cells are shown unranked rather than guessed at.
+
 - [x] **Document verification** — every stored value checked against the primary document of the filing it cites, recording the matched span and the scale the filing printed it at. 98% of 647 facts located; the residue is mostly zero-valued facts, which cannot be searched for meaningfully.
 
 - [x] **`xbrl_facts`** — rate-limited EDGAR client, concept registry with `srt:` / `us-gaap:` aliasing, typed fact rows, and a per-company coverage report scoring currency as well as presence
@@ -290,7 +301,6 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 - [x] Run the coverage report across the full SIC-1311 population — 1,380 CIKs enumerated, 100 distinct current issuers profiled and scored
 - [ ] Lock the cohort — filter the 100 to real E&P operators (the coverage ranking alone selects royalty vehicles), then select 20 across basins
 - [ ] Filing watcher over EDGAR submissions, so new 10-Ks and 8-Ks trigger ingest
-- [ ] Use the verified scales to normalise the panel, so peers can finally be ranked against each other rather than only within a declared unit
 - [ ] Golden set: hand-label the 8 fields × 20 companies × recent periods, starting with the fields XBRL does not cover
 
 ### Deferred

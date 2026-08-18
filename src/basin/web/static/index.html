@@ -177,6 +177,18 @@
 
   .count { color: var(--dim); font-size: 12.5px; margin-left: auto; }
 
+  .toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--line); border-radius: 5px;
+    background: var(--panel); color: var(--muted);
+    font-size: 13px; cursor: pointer; user-select: none;
+  }
+  .toggle:has(input:checked) { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-dim); }
+  .toggle input { accent-color: var(--accent); margin: 0; cursor: pointer; }
+
+  .asfiled { display: block; color: var(--dim); font-size: 11px; margin-top: 3px; font-family: var(--mono); }
+
   /* ---- tables ---- */
 
   .scroll {
@@ -494,6 +506,9 @@
       <select id="concept"></select>
       <select id="period"></select>
       <select id="product"><option value="">All products</option></select>
+      <label class="toggle" title="Rank every filer together, in BOE or USD, using magnitudes resolved against the filings">
+        <input type="checkbox" id="normalize"> Normalize
+      </label>
       <span class="count" id="panel-count"></span>
     </div>
     <details class="callout" id="panel-warning" hidden>
@@ -591,6 +606,25 @@ function verifyCell(r) {
        + `</span>`;
 }
 
+// Typical standardized measure per barrel. Outside this, the magnitude is
+// arithmetically consistent but economically odd -- usually a unit family
+// mislabelled (a gas volume tagged in barrels), which scale resolution cannot
+// see. Shown rather than suppressed.
+const TYPICAL_USD_PER_BOE = [1.5, 50];
+
+function basisCell(r, normalized) {
+  if (!normalized) return "";
+  const bits = [];
+  if (r.conversion_note) {
+    bits.push(`<span class="tag" title="${esc(r.conversion_note)}">6:1 gas</span>`);
+  }
+  if (r.usd_per_boe != null &&
+      (r.usd_per_boe < TYPICAL_USD_PER_BOE[0] || r.usd_per_boe > TYPICAL_USD_PER_BOE[1])) {
+    bits.push(`<span class="tag warn" title="Implies $${r.usd_per_boe.toFixed(2)} per BOE against this filer's standardized measure, which is outside the usual $${TYPICAL_USD_PER_BOE[0]}-$${TYPICAL_USD_PER_BOE[1]} range. The scale is self-consistent, so the likely cause is a mislabelled unit family.">$${r.usd_per_boe.toFixed(2)}/BOE</span>`);
+  }
+  return bits.join(" ");
+}
+
 const fmt = (v, unit) => {
   if (v === null || v === undefined) return "—";
   const abs = Math.abs(v);
@@ -674,10 +708,28 @@ async function loadPanel() {
     return;
   }
 
-  // Group by declared unit. Comparison is only defensible inside a group.
+  const normalized = $("#normalize").checked;
+
+  // Normalised: one group per canonical unit, plus everything whose magnitude
+  // could not be resolved -- kept visible, but never ranked alongside.
+  // Otherwise: one group per declared unit, which is as far as comparison goes.
   const groups = {};
-  for (const r of rows) (groups[r.unit] ??= []).push(r);
-  const units = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
+  if (normalized) {
+    for (const r of rows) {
+      const key = r.canonical_value == null ? "\u0000unresolved" : r.canonical_unit;
+      (groups[key] ??= []).push(r);
+    }
+    for (const k of Object.keys(groups)) {
+      groups[k].sort((a, b) => (b.canonical_value ?? -1) - (a.canonical_value ?? -1));
+    }
+  } else {
+    for (const r of rows) (groups[r.unit] ??= []).push(r);
+  }
+  const units = Object.keys(groups).sort((a, b) => {
+    if (a.startsWith("\u0000")) return 1;
+    if (b.startsWith("\u0000")) return -1;
+    return groups[b].length - groups[a].length;
+  });
 
   // Two different reasons a concept can span units, needing two different
   // caveats. Rate units ("USD/bbl") differ because they measure different
@@ -685,8 +737,8 @@ async function loadPanel() {
   // inconsistently against the label. Saying the wrong one would be worse
   // than saying nothing.
   const isRate = units.every((u) => u.includes("/"));
-  $("#panel-warning").hidden = units.length < 2;
-  if (units.length > 1) {
+  $("#panel-warning").hidden = units.length < 2 || normalized;
+  if (units.length > 1 && !normalized) {
     $("#panel-warning-summary").innerHTML = isRate
       ? `Quoted against ${units.length} different denominators — compared within each only`
       : `Declared in ${units.length} different units — ranked within each only`;
@@ -718,24 +770,34 @@ async function loadPanel() {
 
   const body = units.map((unit) => {
     const group = groups[unit];
-    // Bars scale within the group, never across groups.
-    const max = Math.max(...group.map((r) => Math.abs(r.value)));
+    const unresolved = unit.startsWith("\u0000");
+    const magnitude = (r) => Math.abs(normalized && !unresolved ? r.canonical_value : r.value);
+    const max = Math.max(...group.map(magnitude));
+    const label = unresolved ? "not comparable" : unit;
+    const caption = unresolved
+      ? `${group.length} ${group.length === 1 ? "company" : "companies"} · magnitude not resolved against the filing, so not ranked`
+      : normalized
+        ? `${group.length} ${group.length === 1 ? "company" : "companies"} · ranked across every filer`
+        : `${group.length} ${group.length === 1 ? "company" : "companies"} · comparable within this group only`;
     const groupHeader = units.length > 1
-      ? `<tr class="group"><td colspan="8">
-           <span class="group-unit">${esc(unit)}</span>
-           <span class="group-count">${group.length} ${group.length === 1 ? "company" : "companies"} · comparable within this group only</span>
+      ? `<tr class="group"><td colspan="9">
+           <span class="group-unit">${esc(label)}</span>
+           <span class="group-count">${caption}</span>
          </td></tr>`
       : "";
     return groupHeader + group.map((r) => `
       <tr>
         <td class="ticker">${esc(r.ticker || "—")}</td>
         <td class="name">${esc(r.name)}<span class="cik">${esc(r.cik)}</span></td>
-        <td class="num"><span class="value">${fmt(r.value, r.unit)}</span><span class="unit">${esc(r.unit)}</span></td>
-        <td class="bar-cell col-bar"><div class="bar-track"><div class="bar" style="width:${(Math.abs(r.value) / max) * 100}%"></div></div></td>
+        <td class="num">${normalized && r.canonical_value != null
+            ? `<span class="value">${fmt(r.canonical_value, r.canonical_unit)}</span><span class="unit">${esc(r.canonical_unit)}</span>`
+              + `<span class="asfiled">filed as ${fmt(r.value, r.unit)} ${esc(r.unit)}</span>`
+            : `<span class="value">${fmt(r.value, r.unit)}</span><span class="unit">${esc(r.unit)}</span>`}</td>
+        <td class="bar-cell col-bar"><div class="bar-track"><div class="bar" style="width:${(magnitude(r) / max) * 100}%"></div></div></td>
         <td class="col-product">${r.product ? `<span class="tag product">${esc(r.product)}</span>` : `<span class="sub">—</span>`}</td>
-        <td class="col-basis">${r.unit_changed
+        <td class="col-basis">${basisCell(r, normalized) || (r.unit_changed
               ? `<span class="tag warn" title="This filer changed the declared unit mid-series: ${esc(r.series_units)}">unit changed</span>`
-              : `<span class="sub">—</span>`}</td>
+              : `<span class="sub">—</span>`)}</td>
         <td><a class="cite" href="https://www.sec.gov/Archives/edgar/data/${parseInt(r.cik, 10)}/${r.accession.replace(/-/g, "")}/${r.accession}-index.htm"
                target="_blank" rel="noopener"
                title="${esc(r.form)} filed ${esc(r.filed_date)}">${esc(r.accession)}</a></td>
@@ -922,6 +984,7 @@ $("#home").addEventListener("click", () => showView("panel"));
 $("#concept").addEventListener("change", loadPeriods);
 $("#period").addEventListener("change", loadPanel);
 $("#product").addEventListener("change", loadPanel);
+$("#normalize").addEventListener("change", loadPanel);
 
 loadStats();
 loadConcepts();
