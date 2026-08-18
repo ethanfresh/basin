@@ -219,3 +219,55 @@ class TestHeaderUnits:
         )
         assert r.reserve_unit == "MBoe"
         assert not r.unit_corrected
+
+
+class TestExhibitDetection:
+    """What an attachment *is* comes from EDGAR's declared type, not its name."""
+
+    INDEX_HTML = """
+    <table>
+      <tr><td>1</td><td>FORM 8-K</td><td>bdco20260522_8k.htm iXBRL</td><td>8-K</td><td>25904</td></tr>
+      <tr><td>2</td><td>EXHIBIT 99.1 EARNINGS RLS</td><td>ex_967513.htm</td><td>EX-99.1</td><td>162964</td></tr>
+      <tr><td>3</td><td>MATERIAL AGREEMENT</td><td>ef20080297_ex10-1.htm</td><td>EX-10.1</td><td>4000</td></tr>
+      <tr><td>4</td><td></td><td>logo.jpg</td><td>GRAPHIC</td><td>5607</td></tr>
+    </table>
+    """
+
+    class _Client:
+        def __init__(self, html):
+            self.html = html
+
+        def get_text(self, url):
+            return self.html
+
+    def test_finds_an_exhibit_whose_filename_says_nothing(self):
+        from basin.documents.locate import earnings_exhibits
+
+        client = self._Client(self.INDEX_HTML)
+        # "ex_967513.htm" contains no "99" at all; only the type column does.
+        assert earnings_exhibits(client, "1", "0001437749-26-028116") == [
+            "ex_967513.htm"
+        ]
+
+    def test_ignores_a_material_agreement_exhibit(self):
+        from basin.documents.locate import earnings_exhibits
+
+        # EX-10.1 is a contract, not an earnings release, and carrying it into
+        # a guidance corpus would be noise.
+        found = earnings_exhibits(self._Client(self.INDEX_HTML), "1", "acc")
+        assert not any("ex10" in name for name in found)
+
+    def test_ignores_non_html_attachments(self):
+        from basin.documents.locate import earnings_exhibits
+
+        assert "logo.jpg" not in earnings_exhibits(
+            self._Client(self.INDEX_HTML), "1", "acc"
+        )
+
+    def test_reads_every_declared_type(self):
+        from basin.documents.locate import index_documents
+
+        docs = index_documents(self._Client(self.INDEX_HTML), "1", "acc")
+        assert [d["type"] for d in docs] == ["8-K", "EX-99.1", "EX-10.1", "GRAPHIC"]
+        # The document cell can carry a trailing "iXBRL" marker.
+        assert docs[0]["document"] == "bdco20260522_8k.htm"

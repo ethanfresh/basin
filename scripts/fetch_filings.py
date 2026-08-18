@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from basin.documents import corpus
-from basin.documents.locate import filing_dir
+from basin.documents.locate import earnings_exhibits, filing_dir
 from basin.edgar import EdgarClient, NotFound, SECError
 from basin.store import DEFAULT_DB_PATH, connect, record_filing
 
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                                   period_end=period or None, primary_doc=document)
                     targets = [document]
                     if args.exhibits and form.startswith("8-K"):
-                        targets += exhibit_names(client, cik, accession)
+                        targets += earnings_exhibits(client, cik, accession)
 
                     for name in targets:
                         if corpus.is_stored(accession, name):
@@ -111,20 +111,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n" + ", ".join(f"{k} {v}" for k, v in counts.most_common()))
     return 0
-
-
-def exhibit_names(client: EdgarClient, cik: str, accession: str) -> list[str]:
-    """EX-99.1 attachments, where earnings releases and guidance actually live."""
-    try:
-        index = client.get_json(f"{filing_dir(cik, accession)}/index.json")
-    except (NotFound, SECError):
-        return []
-    out = []
-    for item in index.get("directory", {}).get("item", []):
-        name = item.get("name", "")
-        if name.endswith((".htm", ".html")) and "ex99" in name.lower().replace("-", "").replace("_", ""):
-            out.append(name)
-    return out[:2]
 
 
 if __name__ == "__main__":

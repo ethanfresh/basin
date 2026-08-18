@@ -55,3 +55,46 @@ def primary_document(
 
 def document_url(cik: str, accession: str, document: str) -> str:
     return f"{filing_dir(cik, accession)}/{document}"
+
+
+# The filing index's document table, one row per attachment.
+_ROW_RE = re.compile(r"(?is)<tr[^>]*>(.*?)</tr>")
+_CELL_RE = re.compile(r"(?is)<td[^>]*>(.*?)</td>")
+_STRIP_TAGS = re.compile(r"<[^>]+>")
+
+
+def index_documents(client: EdgarClient, cik: str, accession: str) -> list[dict[str, str]]:
+    """Every attachment in a filing, with the type EDGAR declares for it.
+
+    Filenames are not a usable signal for what an attachment *is*: one
+    earnings release is ``ex_967513.htm``, another ``exh_99.htm``, a third
+    ``decresponseannouncementv28.htm``. The filing index states the type
+    (``EX-99.1``) in its own column, which is authoritative — the same lesson
+    as taking the primary document from ``primaryDocument`` rather than
+    guessing at the name.
+    """
+    import html as html_module
+
+    raw = client.get_text(f"{filing_dir(cik, accession)}/{accession}-index.htm")
+    out: list[dict[str, str]] = []
+    for row in _ROW_RE.findall(raw):
+        cells = [
+            html_module.unescape(_STRIP_TAGS.sub("", cell)).replace("\xa0", " ").strip()
+            for cell in _CELL_RE.findall(row)
+        ]
+        # seq, description, document, type, size
+        if len(cells) < 4 or not cells[2]:
+            continue
+        name = cells[2].split()[0]
+        out.append({"description": cells[1], "document": name, "type": cells[3]})
+    return out
+
+
+def earnings_exhibits(client: EdgarClient, cik: str, accession: str) -> list[str]:
+    """EX-99 attachments, where earnings releases and guidance actually live."""
+    return [
+        d["document"]
+        for d in index_documents(client, cik, accession)
+        if d["type"].upper().startswith("EX-99")
+        and d["document"].lower().endswith((".htm", ".html"))
+    ]
