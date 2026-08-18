@@ -186,7 +186,15 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 render_png(html, image_path)
                 result = check_one(client, fact, image_path)
-            except anthropic.AuthenticationError:
+            except (anthropic.AuthenticationError, TypeError) as exc:
+                # The SDK raises TypeError("Could not resolve authentication
+                # method...") before any HTTP call when no credential source
+                # exists. Either way this dooms every remaining fact, so stop
+                # rather than recording the whole sample as errors.
+                if "authentication" not in str(exc).lower() and not isinstance(
+                    exc, anthropic.AuthenticationError
+                ):
+                    raise
                 print(
                     "\nNo API credentials. Set ANTHROPIC_API_KEY or run "
                     "`ant auth login`, then re-run.",
