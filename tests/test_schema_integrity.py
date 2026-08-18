@@ -133,3 +133,44 @@ class TestReserveConsistency:
         # A 1% overshoot is rounding between two tables in one filing, not a
         # contradiction worth a caveat on the cell.
         assert self._pair(conn, 1010.0, "MMBoe", 1000.0, "MMBoe")["issue"] is None
+
+
+class TestReserveSumCheck:
+    """developed + undeveloped = total is what catches a wrong alias choice."""
+
+    def _triple(self, conn, dev, undev, total, unit="MMBoe"):
+        rows = [
+            _row(concept_key="proved_developed_reserves_boe", value=dev, unit=unit),
+            _row(concept_key="proved_reserves_boe", value=total, unit=unit),
+        ]
+        if undev is not None:
+            rows.append(
+                _row(concept_key="proved_undeveloped_reserves_boe", value=undev, unit=unit)
+            )
+        insert_facts(conn, rows)
+        return conn.execute("SELECT issue FROM reserve_consistency").fetchone()["issue"]
+
+    def test_components_summing_to_total_is_clean(self, conn):
+        assert self._triple(conn, 700.0, 300.0, 1000.0) is None
+
+    def test_components_disagreeing_with_total_is_flagged(self, conn):
+        # Continental's shape: the two components agree with each other and
+        # the total is a third of their sum, so the total's tag is wrong.
+        # 'developed exceeds total' is also true here, but the sum mismatch is
+        # the diagnosis that says which of the three to distrust.
+        assert self._triple(conn, 960.0, 1825.0, 865.0) == (
+            "components do not sum to total"
+        )
+
+    def test_sum_mismatch_without_developed_exceeding_total(self, conn):
+        # Developed alone stays under the total, so only the sum check fires.
+        assert self._triple(conn, 700.0, 900.0, 1000.0) == (
+            "components do not sum to total"
+        )
+
+    def test_small_sum_discrepancy_is_tolerated(self, conn):
+        # 2% is rounding between two tables in one filing.
+        assert self._triple(conn, 700.0, 320.0, 1000.0) is None
+
+    def test_missing_undeveloped_skips_the_sum_check(self, conn):
+        assert self._triple(conn, 700.0, None, 1000.0) is None

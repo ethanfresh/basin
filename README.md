@@ -128,12 +128,13 @@ Coverage of the six Facts-layer concepts, across all 100 issuers:
 |---|---|---|
 | Capex | 49 / 100 | 69 / 100 |
 | Standardized measure | 48 / 100 | 61 / 100 |
-| Proved developed reserves | 31 / 100 | 39 / 100 |
-| Total proved reserves | 31 / 100 | 41 / 100 |
+| Proved developed reserves | 31 / 100 | 41 / 100 |
+| Total proved reserves | 31 / 100 | 43 / 100 |
+| Proved undeveloped reserves | 30 / 100 | 42 / 100 |
 | Oil & gas revenue | 24 / 100 | 64 / 100 |
 | Production volume | 23 / 100 | 28 / 100 |
 | **Average realized price** | **2 / 100** | 8 / 100 |
-| **Production cost per BOE** | **0 / 100** | 2 / 100 |
+| **Production cost per BOE** | **0 / 100** | 4 / 100 |
 
 Three findings that change how the cohort gets picked:
 
@@ -206,7 +207,11 @@ The first live instance of this turned up in the Facts layer, before any languag
 
 - **The declared unit does not determine the magnitude.** Filers disagree about whether the tagged value already has its unit's prefix applied. Diamondback reports proved developed reserves as `2,521,028,000` tagged `MBoe` — base units under a presentational label, since their reserves are ~2.5 billion BOE, not 2.5 trillion. Devon reports `2,155` tagged `MMcfe`, where the value *is* scaled to the label. Both are internally coherent; neither is inferable from `(value, unit)` alone.
 
-- **The arithmetic does not always close.** Proved developed reserves are a subset of total proved, so developed can never exceed total and both must be quoted in the same unit. Across the cohort, **76 of 234 company-periods fail that test** — 57 quote the two in different units, 12 report them as exactly equal, and 7 report developed as larger than total. Continental Resources fails it four years running because the two concepts resolve to tags whose scopes differ (`ProvedDevelopedReservesBOE1` against `ProvedDevelopedAndUndevelopedReserveNetEnergy`).
+- **A missing alias reads exactly like a missing disclosure.** The registry had `ProvedUndevelopedReserveBOE` but not `ProvedUndevelopedReserveBOE1`, which a sweep of 40 filers found in 14 of them against 3 for the form it did have — plus singular/plural spellings and `srt:`/`us-gaap:` mirrors throughout. Undeveloped reserves read as 5/100 coverage because of the gap in the registry, not because filers were not tagging it. Coverage numbers measure the registry as much as the filers, which is an argument for checking them against the raw payloads rather than trusting them.
+
+- **The arithmetic does not always close.** Two identities have to hold inside one filer's own numbers: developed ≤ total, and developed + undeveloped = total. Across the cohort **85 of 251 company-periods fail** — 63 quote the concepts in different units, 12 report developed as exactly equal to total, and 10 have components that disagree with the stated total.
+
+  The sum check is the one that earns its place, because it localises the fault. Antero's components sum to **17,261 MMcfe** against a total reading **17,261,000** — identical digits, a factor of a thousand apart. Continental's components sum to 2.68 million MBoe against a total of 745 thousand; the two components agree with each other, so it is the total's tag (`ProvedDevelopedAndUndevelopedReserveNetEnergy`) that does not mean what the registry assumed.
 
 Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, and the dashboard groups a peer table by declared unit so it never renders a ranking it cannot support. **Cross-unit normalisation of volume concepts needs per-filer calibration and is deliberately not applied.**
 

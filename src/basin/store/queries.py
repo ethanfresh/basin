@@ -268,7 +268,7 @@ def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
         FROM reserve_consistency r
         JOIN company c ON c.cik = r.cik
         WHERE r.issue IS NOT NULL
-        ORDER BY c.name, r.period_end DESC
+        ORDER BY r.issue, c.name, r.period_end DESC
         """,
     )
     for row in reserve_issues:

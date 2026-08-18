@@ -222,34 +222,57 @@ CREATE INDEX IF NOT EXISTS coverage_cik_idx ON coverage_snapshot (cik, measured_
 
 -- Reserve arithmetic that does not add up.
 --
--- Proved developed reserves are a subset of total proved, so developed must
--- never exceed total and the two must be quoted in the same unit. Both
--- failures happen in the wild, and both are invisible in a single-metric
--- table -- you only see them by putting the two side by side.
+-- Two identities have to hold inside a single filer's own numbers:
+--   developed <= total          (developed reserves are a subset)
+--   developed + undeveloped = total
+-- and all three must be quoted in one unit.
 --
--- This is the cheapest available check on the scale-label problem, because it
--- needs no outside knowledge of how big a company is: it is internal to one
--- filer's own numbers.
+-- The second identity is the useful one, because it is what catches a wrong
+-- *alias* choice. Continental tags ProvedDevelopedReservesBOE1 (960 MMBoe) and
+-- ProvedUndevelopedReserveBOE1 (1,825 MMBoe), which sum to 2,785 -- while the
+-- tag picked for total, ProvedDevelopedAndUndevelopedReserveNetEnergy, reads
+-- 865. The components agree with each other and disagree with the total, so
+-- the total is the tag that does not mean what the registry assumed.
+--
+-- Neither check needs outside knowledge of how large a company is, which is
+-- what makes them cheap enough to run over the whole cohort.
 CREATE VIEW IF NOT EXISTS reserve_consistency AS
 SELECT d.cik,
        d.period_end,
        d.value      AS developed_value,
        d.unit       AS developed_unit,
+       u.value      AS undeveloped_value,
+       u.unit       AS undeveloped_unit,
        t.value      AS total_value,
        t.unit       AS total_unit,
        d.accession  AS developed_accession,
        t.accession  AS total_accession,
+       d.tag        AS developed_tag,
+       t.tag        AS total_tag,
        CASE WHEN d.unit = t.unit AND t.value <> 0
             THEN d.value / t.value END AS ratio,
        CASE
-           WHEN d.unit <> t.unit           THEN 'units differ'
-           WHEN t.value = 0                THEN 'total proved is zero'
-           WHEN d.value > t.value * 1.02   THEN 'developed exceeds total'
-           WHEN d.value = t.value          THEN 'developed equals total'
+           WHEN d.unit <> t.unit         THEN 'units differ'
+           WHEN t.value = 0              THEN 'total proved is zero'
+           -- Ordered before the subset check on purpose. When all three are
+           -- present and the two components agree with each other but not
+           -- with the total, that localises the fault to the total's tag.
+           -- 'developed exceeds total' would also be true, but says only that
+           -- something is wrong, not which value to distrust.
+           WHEN u.value IS NOT NULL
+                AND u.unit = d.unit
+                AND ABS(d.value + u.value - t.value) > t.value * 0.03
+                                         THEN 'components do not sum to total'
+           WHEN d.value > t.value * 1.02 THEN 'developed exceeds total'
+           WHEN d.value = t.value        THEN 'developed equals total'
        END AS issue
 FROM fact_current d
 JOIN fact_current t
   ON  t.cik         = d.cik
   AND t.period_end  = d.period_end
   AND t.concept_key = 'proved_reserves_boe'
+LEFT JOIN fact_current u
+  ON  u.cik         = d.cik
+  AND u.period_end  = d.period_end
+  AND u.concept_key = 'proved_undeveloped_reserves_boe'
 WHERE d.concept_key = 'proved_developed_reserves_boe';

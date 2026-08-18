@@ -102,6 +102,8 @@ RESERVES_DEVELOPED = ConceptSpec(
         ("srt", "ProvedDevelopedReservesBOE1"),
         ("srt", "ProvedDevelopedReservesVolume"),
         ("us-gaap", "ProvedDevelopedReservesBOE1"),
+        ("us-gaap", "ProvedDevelopedReservesVolume"),
+        ("us-gaap", "ProvedDevelopedReservesBOE"),
     ),
     preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
 )
@@ -110,9 +112,13 @@ RESERVES_UNDEVELOPED = ConceptSpec(
     key="proved_undeveloped_reserves_boe",
     label="Proved undeveloped reserves (BOE)",
     aliases=(
+        ("srt", "ProvedUndevelopedReserveBOE1"),
         ("srt", "ProvedUndevelopedReserveBOE"),
+        ("srt", "ProvedUndevelopedReserveVolume"),
         ("srt", "ProvedUndevelopedReservesVolume"),
+        ("us-gaap", "ProvedUndevelopedReserveBOE1"),
         ("us-gaap", "ProvedUndevelopedReserveBOE"),
+        ("us-gaap", "ProvedUndevelopedReserveVolume"),
     ),
     preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
 )
@@ -124,6 +130,7 @@ RESERVES_TOTAL_PROVED = ConceptSpec(
         ("srt", "ProvedDevelopedAndUndevelopedReservesNet"),
         ("srt", "ProvedDevelopedAndUndevelopedReserveNetEnergy"),
         ("us-gaap", "ProvedDevelopedAndUndevelopedReservesNet"),
+        ("us-gaap", "ProvedDevelopedAndUndevelopedReserveNetEnergy"),
     ),
     preferred_units=("MMBoe", "MBoe", "Boe", "boe", "MMBbls", "MBbls", "bbl", "MMcfe", "Bcf"),
 )
@@ -139,6 +146,14 @@ STANDARDIZED_MEASURE = ConceptSpec(
         (
             "us-gaap",
             "StandardizedMeasureOfDiscountedFutureNetCashFlowsRelatingToProvedOilAndGasReserves",
+        ),
+        (
+            "srt",
+            "StandardizedMeasureOfDiscountedFutureNetCashFlowRelatingToProvedOilAndGasReserves",
+        ),
+        (
+            "us-gaap",
+            "StandardizedMeasureOfDiscountedFutureNetCashFlowRelatingToProvedOilAndGasReserves",
         ),
     ),
     preferred_units=("USD",),
@@ -211,7 +226,9 @@ PRODUCTION_COST_PER_UNIT = ConceptSpec(
     aliases=(
         ("srt", "ConsolidatedOilAndGasProductionCostsPerUnitOfProduction"),
         ("srt", "ProductionCostsPerUnitOfProduction"),
+        ("srt", "AverageProductionCostsPerBarrelOfOilEquivalentsBOE"),
         ("us-gaap", "ConsolidatedOilAndGasProductionCostsPerUnitOfProduction"),
+        ("us-gaap", "AverageProductionCostsPerBarrelOfOilEquivalentsBOE"),
     ),
     notes="Sampled at 1/10. Extraction layer owns this field.",
 )

@@ -536,7 +536,9 @@
       Proved developed reserves are a <strong>subset</strong> of total proved, so developed can
       never exceed total and both must be quoted in the same unit. This is the cheapest check on
       the scale-label problem because it needs no outside knowledge of how big a company is — it
-      compares one filer's numbers against its own.
+      compares one filer's numbers against its own. The sum check is the one that catches a wrong
+      <em>alias</em>: when developed and undeveloped agree with each other but not with the total,
+      it is the total's tag that does not mean what it appears to.
     </p>
     <div class="scroll"><table id="reserve-table"></table></div>
 
@@ -789,12 +791,14 @@ async function loadQuality() {
     "developed exceeds total": "impossible: developed reserves are part of total proved",
     "developed equals total": "possible but unusual — worth confirming against the filing",
     "total proved is zero": "total proved is zero while developed is not",
+    "components do not sum to total": "developed + undeveloped disagrees with the total by more than 3% — usually means the tag chosen for one of the three does not mean what it appears to",
   };
 
   $("#reserve-table").innerHTML = data.reserve_issues.length ? `
     <thead><tr>
       <th style="width:72px">Ticker</th><th>Company</th><th>Period</th>
-      <th class="num">Developed</th><th class="num">Total proved</th>
+      <th class="num">Developed</th><th class="num col-bar">+ Undeveloped</th>
+      <th class="num">Total proved</th>
       <th>Issue</th><th class="col-tag">Sources</th>
     </tr></thead>
     <tbody>${data.reserve_issues.map((r) => `
@@ -803,6 +807,9 @@ async function loadQuality() {
         <td class="name">${esc(r.name)}</td>
         <td><span class="sub">${esc(r.period_end)}</span></td>
         <td class="num"><span class="value">${fmt(r.developed_value, r.developed_unit)}</span><span class="unit">${esc(r.developed_unit)}</span></td>
+        <td class="num col-bar">${r.undeveloped_value == null
+            ? `<span class="sub">—</span>`
+            : `<span class="value">${fmt(r.undeveloped_value, r.undeveloped_unit)}</span><span class="unit">${esc(r.undeveloped_unit)}</span>`}</td>
         <td class="num"><span class="value">${fmt(r.total_value, r.total_unit)}</span><span class="unit">${esc(r.total_unit)}</span></td>
         <td><span class="tag warn" title="${esc(ISSUE_HINT[r.issue] || "")}">${esc(r.issue)}</span></td>
         <td class="col-tag">
