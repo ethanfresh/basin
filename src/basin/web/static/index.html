@@ -263,6 +263,7 @@
     border: 1px solid var(--line);
     color: var(--muted);
   }
+  .tag.ok { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-dim); }
   .tag.product { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-dim); }
   .tag.warn { color: var(--warn); border-color: rgba(229,160,0,0.25); background: rgba(229,160,0,0.09); }
 
@@ -574,6 +575,22 @@
 const $ = (s) => document.querySelector(s);
 const api = (p) => fetch(p).then((r) => r.json());
 
+// The verification badge is the product's central claim made visible: this
+// number was found, verbatim, in the document the row cites.
+function verifyCell(r) {
+  if (!r.verify_status) return `<span class="sub" title="not checked against the filing yet">—</span>`;
+  if (r.verify_status !== "found") {
+    return `<span class="tag warn" title="the value was not located in ${esc(r.verify_document || "the filing")}">${esc(r.verify_status)}</span>`;
+  }
+  const scaled = r.verify_scale && r.verify_scale !== 1;
+  const title = (scaled
+      ? `The filing prints ${r.verify_printed}, this row stores ${r.value.toLocaleString()} — a factor of ${r.verify_scale.toLocaleString()}.\n\n`
+      : "") + (r.verify_span || "");
+  return `<span class="tag ${scaled ? "warn" : "ok"}" title="${esc(title)}">`
+       + (scaled ? `prints ${esc(r.verify_printed)}` : "verified")
+       + `</span>`;
+}
+
 const fmt = (v, unit) => {
   if (v === null || v === undefined) return "—";
   const abs = Math.abs(v);
@@ -603,6 +620,7 @@ async function loadStats() {
     ["Periods", `${(s.earliest_period || "").slice(0, 4)}–${(s.latest_period || "").slice(0, 4)}`, ""],
     ["Flagged series", s.unit_discontinuities, s.unit_discontinuities ? "warn" : ""],
     ["Reserve conflicts", s.reserve_issues, s.reserve_issues ? "warn" : ""],
+    ["Verified in filing", `${s.verified}/${s.verify_checked}`, s.verified ? "accent" : ""],
   ].map(([label, value, cls]) =>
     `<div><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`
   ).join("");
@@ -694,6 +712,7 @@ async function loadPanel() {
       <th class="col-product">Product</th>
       <th class="col-basis">Basis</th>
       <th>Source</th>
+      <th>Verified</th>
       <th class="col-tag">XBRL tag</th>
     </tr></thead>`;
 
@@ -720,6 +739,7 @@ async function loadPanel() {
         <td><a class="cite" href="https://www.sec.gov/Archives/edgar/data/${parseInt(r.cik, 10)}/${r.accession.replace(/-/g, "")}/${r.accession}-index.htm"
                target="_blank" rel="noopener"
                title="${esc(r.form)} filed ${esc(r.filed_date)}">${esc(r.accession)}</a></td>
+        <td>${verifyCell(r)}</td>
         <td class="col-tag"><span class="sub">${esc(r.taxonomy)}:${esc(r.tag)}</span></td>
       </tr>`).join("");
   }).join("");

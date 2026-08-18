@@ -61,6 +61,10 @@ Alongside the human-readable filing, companies also submit the same figures as *
 
 XBRL matters enormously here. A number read from XBRL is exact, comes with its originating accession number, and involves no language model at all — which structurally eliminates the possibility of a fabricated figure. Basin takes everything it can from XBRL, and only falls back to document extraction for what XBRL does not cover.
 
+**But XBRL asserts a citation rather than proving one, so every value is checked against the filing it cites.** The accession attached to an XBRL fact comes from the SEC, not from having looked; until the figure has been located in the document, the citation is a claim. Verification fetches the filing's primary document, flattens it to text, and finds the value — recording the verbatim span it matched.
+
+That check answers something XBRL cannot. A filer's declared unit does not determine magnitude: Diamondback's proved reserves arrive as `2,521,028,000` tagged `MBoe`, and the 10-K's reserve table prints `2,521,028`. The document is the only place the presentation scale is stated. Across 647 verified facts, **98% were found in the cited filing, and 64% are stored at a different scale than the filing prints them** — thousands for 305, millions for 93, billions for 4. Scale is not even consistent within a filer: of 77 filers checked, 29 use different scales for different concepts, because reserve tables and financial statements are presented differently in the same document.
+
 ## Why one industry
 
 This is a technical constraint before it is a go-to-market decision.
@@ -250,6 +254,9 @@ python scripts/coverage_report.py --all-concepts --cik 1090012 --cik 1539838
 python scripts/ingest_xbrl.py --cik 1090012 --cik 1539838
 python scripts/load_cohort.py          # tickers and cohort metadata
 
+# Check stored values against the documents they cite
+python scripts/verify_facts.py --limit 700
+
 pytest
 ```
 
@@ -273,6 +280,8 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 
 ### Done
 
+- [x] **Document verification** — every stored value checked against the primary document of the filing it cites, recording the matched span and the scale the filing printed it at. 98% of 647 facts located; the residue is mostly zero-valued facts, which cannot be searched for meaningfully.
+
 - [x] **`xbrl_facts`** — rate-limited EDGAR client, concept registry with `srt:` / `us-gaap:` aliasing, typed fact rows, and a per-company coverage report scoring currency as well as presence
 - [x] **Fact store schema** — `(concept, value, unit, period, accession, form, extracted_by, source_span)`, append-only, with a `fact_current` view for reads. An LLM-sourced row without a source span is rejected by a `CHECK` constraint rather than by review.
 
@@ -281,6 +290,7 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 - [x] Run the coverage report across the full SIC-1311 population — 1,380 CIKs enumerated, 100 distinct current issuers profiled and scored
 - [ ] Lock the cohort — filter the 100 to real E&P operators (the coverage ranking alone selects royalty vehicles), then select 20 across basins
 - [ ] Filing watcher over EDGAR submissions, so new 10-Ks and 8-Ks trigger ingest
+- [ ] Use the verified scales to normalise the panel, so peers can finally be ranked against each other rather than only within a declared unit
 - [ ] Golden set: hand-label the 8 fields × 20 companies × recent periods, starting with the fields XBRL does not cover
 
 ### Deferred

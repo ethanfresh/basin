@@ -41,6 +41,8 @@ def summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "earliest_period": one("SELECT MIN(period_end) FROM fact"),
         "latest_period": one("SELECT MAX(period_end) FROM fact"),
         "unit_discontinuities": one("SELECT COUNT(*) FROM unit_discontinuity"),
+        "verified": one("SELECT COUNT(*) FROM fact_verification WHERE status='found'"),
+        "verify_checked": one("SELECT COUNT(*) FROM fact_verification"),
         "collisions": one("SELECT COUNT(*) FROM fact_collision"),
         "reserve_issues": one(
             "SELECT COUNT(*) FROM reserve_consistency WHERE issue IS NOT NULL"
@@ -101,7 +103,13 @@ def panel(
                f.extracted_by, f.source_span, f.section, f.basis_note,
                fl.filed_date,
                (ud.cik IS NOT NULL) AS unit_changed,
-               ud.units AS series_units
+               ud.units AS series_units,
+               v.status      AS verify_status,
+               v.printed     AS verify_printed,
+               v.scale_found AS verify_scale,
+               v.hits        AS verify_hits,
+               v.source_span AS verify_span,
+               v.document    AS verify_document
         FROM fact_current f
         JOIN company c ON c.cik = f.cik
         JOIN filing fl ON fl.accession = f.accession
@@ -109,6 +117,7 @@ def panel(
                ON ud.cik = f.cik
               AND ud.concept_key = f.concept_key
               AND ud.product = COALESCE(f.product, '')
+        LEFT JOIN fact_verification v ON v.fact_id = f.id
         WHERE f.concept_key = ? AND f.period_end = ?
     """
     params: tuple = (concept_key, period_end)

@@ -189,3 +189,35 @@ def record_alias_validation(
         """,
         rows,
     )
+
+
+def record_verification(
+    conn: sqlite3.Connection,
+    fact_id: int,
+    status: str,
+    *,
+    document: str | None = None,
+    printed: str | None = None,
+    scale_found: float | None = None,
+    scale_label: str | None = None,
+    hits: int | None = None,
+    source_span: str | None = None,
+    note: str | None = None,
+) -> None:
+    """Record the outcome of checking one fact against its filing."""
+    conn.execute(
+        """
+        INSERT INTO fact_verification
+            (fact_id, status, document, printed, scale_found, scale_label,
+             hits, source_span, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fact_id) DO UPDATE SET
+            status = excluded.status, document = excluded.document,
+            printed = excluded.printed, scale_found = excluded.scale_found,
+            scale_label = excluded.scale_label, hits = excluded.hits,
+            source_span = excluded.source_span, note = excluded.note,
+            checked_at = datetime('now')
+        """,
+        (fact_id, status, document, printed, scale_found, scale_label,
+         hits, source_span, note),
+    )

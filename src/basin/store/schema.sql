@@ -300,3 +300,45 @@ CREATE TABLE IF NOT EXISTS alias_validation (
     checked_at       TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (cik, family, concept_key)
 );
+
+
+-- Document verification: has this value been seen in the filing it cites?
+--
+-- Every fact so far arrived from the XBRL API, where the accession is
+-- asserted by the SEC rather than confirmed against the document. The
+-- README's rule is that a citation is not done until the cited text has been
+-- found in the cited document, so this table records that check.
+--
+-- scale_found is the second reason to do it. Diamondback's proved reserves
+-- arrive as 2,521,028,000 tagged MBoe while the 10-K prints 2,521,028; the
+-- document is the only place the presentation scale is stated, and it is
+-- exactly what the peer panel needs before it can rank across filers.
+CREATE TABLE IF NOT EXISTS fact_verification (
+    fact_id      INTEGER PRIMARY KEY REFERENCES fact(id),
+    status       TEXT NOT NULL,      -- found | not_found | unavailable
+    document     TEXT,               -- primary document filename
+    printed      TEXT,               -- the literal string matched
+    scale_found  REAL,               -- stored value / printed value
+    scale_label  TEXT,
+    hits         INTEGER,            -- occurrences; 1 is strong, 50 is weak
+    source_span  TEXT,               -- verbatim quote around the match
+    note         TEXT,
+    checked_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS fact_verification_status_idx
+    ON fact_verification (status);
+
+
+-- Facts joined to their verification, which is how the panel should read
+-- them once verification has run over the cohort.
+CREATE VIEW IF NOT EXISTS fact_verified AS
+SELECT f.*,
+       v.status      AS verify_status,
+       v.printed     AS verify_printed,
+       v.scale_found AS verify_scale,
+       v.hits        AS verify_hits,
+       v.source_span AS verify_span,
+       v.document    AS verify_document
+FROM fact_current f
+LEFT JOIN fact_verification v ON v.fact_id = f.id;
