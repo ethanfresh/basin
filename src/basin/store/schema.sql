@@ -401,3 +401,57 @@ SELECT f.*,
 FROM fact_current f
 LEFT JOIN fact_scale s ON s.fact_id = f.id
 LEFT JOIN fact_verification v ON v.fact_id = f.id;
+
+
+-- The document corpus, parsed.
+--
+-- Raw HTML lives on disk under data/corpus and stays the archive: it is what
+-- was filed, it never changes, and every parse is re-derivable from it. What
+-- lives here is the *readable* form -- one row per line, carrying the page,
+-- the line number and the "Item N." heading it sits under.
+--
+-- That shape is chosen for how this gets consumed. An extraction pass wants a
+-- section of a filing, not a 3MB file; a citation wants a page and a line; a
+-- reviewer wants to search a phrase across every filing a company has made.
+-- Storing flattened text as one blob would serve none of those.
+CREATE TABLE IF NOT EXISTS document (
+    id           INTEGER PRIMARY KEY,
+    accession    TEXT NOT NULL,
+    name         TEXT NOT NULL,       -- filename as filed
+    cik          TEXT,
+    form         TEXT,
+    filed_date   TEXT,
+    kind         TEXT,                -- primary | exhibit
+    pages        INTEGER,
+    line_count   INTEGER,
+    char_count   INTEGER,
+    indexed_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (accession, name)
+);
+
+CREATE INDEX IF NOT EXISTS document_cik_form_idx ON document (cik, form, filed_date DESC);
+
+
+CREATE TABLE IF NOT EXISTS document_line (
+    document_id  INTEGER NOT NULL REFERENCES document(id),
+    line_no      INTEGER NOT NULL,
+    page         INTEGER NOT NULL,
+    section      TEXT,
+    char_offset  INTEGER NOT NULL,
+    text         TEXT NOT NULL,
+    PRIMARY KEY (document_id, line_no)
+);
+
+CREATE INDEX IF NOT EXISTS document_line_page_idx ON document_line (document_id, page);
+CREATE INDEX IF NOT EXISTS document_line_section_idx ON document_line (document_id, section);
+
+
+-- Full-text search over every line of every filing. FTS5 is contentless
+-- (`content=`), so the text is stored once in document_line and the index
+-- refers to it rather than duplicating a gigabyte.
+CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
+    text,
+    content='document_line',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
