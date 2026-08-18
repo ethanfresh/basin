@@ -158,3 +158,64 @@ class TestScaleResolution:
         r = resolve(1.0, "MBoe", 1e3, 1e15, 1.0)
         assert r.status == "ambiguous"
         assert r.reserve_divisor is None
+
+
+class TestHeaderUnits:
+    """The filing's own table header outranks the tagged unit."""
+
+    def test_reads_a_unit_stated_inline(self):
+        from basin.documents.headers import unit_hints
+
+        text = "our estimated proved reserves were 3,617,856 MBOE at year end"
+        hints = unit_hints(text, text.index("3,617,856"), len("3,617,856"))
+        assert hints[0].unit == "MBOE"
+        assert hints[0].confident
+
+    def test_reads_units_from_a_column_header(self):
+        from basin.documents.headers import unit_hints
+
+        text = "Oil (MMBbl) Natural Gas (Bcf) NGL (MMBbl) Total (Bcfe) Total proved 24 3,612 83 4,253"
+        hints = unit_hints(text, text.index("4,253"), len("4,253"))
+        assert {h.unit for h in hints} >= {"Bcfe", "Bcf", "MMBbl"}
+        assert all(h.kind == "header" for h in hints)
+
+    def test_nearest_header_comes_first(self):
+        from basin.documents.headers import unit_hints
+
+        text = "(MMBbl) then later (Bcfe) and the figure 4,253"
+        assert unit_hints(text, text.index("4,253"), 5)[0].unit == "Bcfe"
+
+    def test_corrects_a_mislabelled_unit_family(self):
+        from basin.facts.scale import resolve
+
+        # Gulfport tags total proved in bbl; its table says Total (Bcfe).
+        # Read as barrels it implies $0.80/BOE, which clears the wide band
+        # and is not a number a producer reports.
+        r = resolve(
+            4_253_000_000.0, "bbl", 1e6, 3_401_000_000.0, 1.0,
+            header_units=("MMBbl", "Bcf", "Bcfe"),
+        )
+        assert r.status == "resolved"
+        assert r.unit_corrected
+        assert r.reserve_unit in {"Bcf", "Bcfe"}
+        assert 1.5 <= r.usd_per_boe <= 50
+
+    def test_leaves_a_correct_tagged_unit_alone(self):
+        from basin.facts.scale import resolve
+
+        r = resolve(
+            3_617_856_000.0, "MBoe", 1e3, 36_910_000_000.0, 1e3,
+            header_units=("MBOE",),
+        )
+        assert not r.unit_corrected
+        assert r.reserve_unit == "MBoe"
+
+    def test_header_units_that_help_nothing_are_ignored(self):
+        from basin.facts.scale import resolve
+
+        r = resolve(
+            3_617_856_000.0, "MBoe", 1e3, 36_910_000_000.0, 1e3,
+            header_units=("Bcf", "MMBbl", "Tcf"),
+        )
+        assert r.reserve_unit == "MBoe"
+        assert not r.unit_corrected
