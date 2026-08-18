@@ -42,6 +42,9 @@ def summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "latest_period": one("SELECT MAX(period_end) FROM fact"),
         "unit_discontinuities": one("SELECT COUNT(*) FROM unit_discontinuity"),
         "collisions": one("SELECT COUNT(*) FROM fact_collision"),
+        "reserve_issues": one(
+            "SELECT COUNT(*) FROM reserve_consistency WHERE issue IS NOT NULL"
+        ),
     }
 
 
@@ -256,8 +259,43 @@ def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY c.name
         """,
     )
+    # Only the rows that fail; the view itself keeps every pairing so the
+    # ratio distribution stays available for analysis.
+    reserve_issues = _rows(
+        conn,
+        """
+        SELECT r.*, c.name, c.ticker
+        FROM reserve_consistency r
+        JOIN company c ON c.cik = r.cik
+        WHERE r.issue IS NOT NULL
+        ORDER BY c.name, r.period_end DESC
+        """,
+    )
+    for row in reserve_issues:
+        row["developed_url"] = filing_url(row["cik"], row["developed_accession"])
+        row["total_url"] = filing_url(row["cik"], row["total_accession"])
+
     return {
         "unit_discontinuities": discontinuities,
         "collisions": collisions,
         "fallback_tags": fallback_tags,
+        "reserve_issues": reserve_issues,
     }
+
+
+def reserve_ratios(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Developed-to-total ratios where the pairing is internally coherent.
+
+    A normal producer lands somewhere around 0.45-0.90. Values outside that
+    band are worth a look even when the units agree.
+    """
+    return _rows(
+        conn,
+        """
+        SELECT r.*, c.name, c.ticker
+        FROM reserve_consistency r
+        JOIN company c ON c.cik = r.cik
+        WHERE r.issue IS NULL AND r.ratio IS NOT NULL
+        ORDER BY r.ratio
+        """,
+    )

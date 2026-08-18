@@ -6,7 +6,7 @@ Basin builds and maintains a structured dataset of the operating metrics that ma
 
 It is built for people who need this data and cannot justify an enterprise terminal seat: smaller investment firms, lenders, consultants, corporate development teams, and accounting firms.
 
-> **Status: Facts layer running.** The XBRL client and the fact store are built and have ingested live filings for five producers. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
+> **Status: Facts layer running, with a dashboard over it.** The XBRL client and fact store are built and have ingested the full SIC-1311 cohort — 94 companies, 5,650 facts, 805 cited filings — served by a read-only web dashboard. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
 >
 > *The name `Basin` is a working title — chosen because it is vertical-specific and avoids the collision with the unrelated "FinAgent" system from Zhang et al., KDD '24.*
 
@@ -206,6 +206,8 @@ The first live instance of this turned up in the Facts layer, before any languag
 
 - **The declared unit does not determine the magnitude.** Filers disagree about whether the tagged value already has its unit's prefix applied. Diamondback reports proved developed reserves as `2,521,028,000` tagged `MBoe` — base units under a presentational label, since their reserves are ~2.5 billion BOE, not 2.5 trillion. Devon reports `2,155` tagged `MMcfe`, where the value *is* scaled to the label. Both are internally coherent; neither is inferable from `(value, unit)` alone.
 
+- **The arithmetic does not always close.** Proved developed reserves are a subset of total proved, so developed can never exceed total and both must be quoted in the same unit. Across the cohort, **76 of 234 company-periods fail that test** — 57 quote the two in different units, 12 report them as exactly equal, and 7 report developed as larger than total. Continental Resources fails it four years running because the two concepts resolve to tags whose scopes differ (`ProvedDevelopedReservesBOE1` against `ProvedDevelopedAndUndevelopedReserveNetEnergy`).
+
 Basin does not rewrite a filer's unit — inventing a corrected label is worse than reporting the filer's own. The `unit_discontinuity` view surfaces every series whose declared unit changes, and the dashboard groups a peer table by declared unit so it never renders a ranking it cannot support. **Cross-unit normalisation of volume concepts needs per-filer calibration and is deliberately not applied.**
 
 This is the sharpest form of the comparability problem so far, and it lands in the Facts layer — the one that was supposed to be the easy, exact one. XBRL removes the risk of a *fabricated* number; it does not deliver a *comparable* one.
@@ -254,7 +256,7 @@ Four views over the store at `http://localhost:8422`:
 - **Panel** — one concept, one period, every company. Rows are grouped by declared unit, because ranking across units would sort by labelling convention rather than size. Every row links to the SEC index page for the accession it came from.
 - **Coverage** — the companies × concepts matrix, distinguishing current from stale from never-tagged. The blank space is the extraction layer's mandate, drawn to scale.
 - **Companies** — cohort members by how much data each actually has.
-- **Data quality** — unit discontinuities and fallback tags. Nothing here is silently corrected.
+- **Data quality** — reserve arithmetic that does not close, unit discontinuities, and fallback tags. Nothing here is silently corrected.
 
 The app opens the store read-only, and every query lives in `basin.store.queries`, so what the browser renders and what the tests assert on are the same code.
 

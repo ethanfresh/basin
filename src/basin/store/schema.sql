@@ -91,6 +91,21 @@ CREATE TABLE IF NOT EXISTS fact (
 
     ingested_at   TEXT NOT NULL DEFAULT (datetime('now')),
 
+    -- Stored generated columns, not COALESCE() expressions in the index.
+    --
+    -- The identity index used to be an expression index. Under SQLite 3.41 a
+    -- plan that scans it can return NULL for `value` -- a plain
+    -- `COUNT(DISTINCT value) > 1` query returned 0 rows with the index and
+    -- 240 with NOT INDEXED. Wrong answers, silently, depending on which plan
+    -- the optimiser picked.
+    --
+    -- Generating the keys as real columns keeps the same semantics (NULL
+    -- product and NULL period_start still compare equal) while leaving the
+    -- index over plain columns, which does not take that code path.
+    -- Postgres 12+ spells generated columns the same way.
+    product_key      TEXT GENERATED ALWAYS AS (COALESCE(product, '')) STORED,
+    period_start_key TEXT GENERATED ALWAYS AS (COALESCE(period_start, '')) STORED,
+
     -- An LLM-extracted value without a source span is exactly the failure mode
     -- the architecture forbids. Enforce it in the schema, not in review.
     CHECK (extracted_by NOT LIKE 'llm:%' OR source_span IS NOT NULL)
@@ -99,14 +114,14 @@ CREATE TABLE IF NOT EXISTS fact (
 -- Re-ingesting the same filing must not duplicate rows, but a genuinely
 -- restated value in a NEW accession must still be insertable.
 --
--- This is an expression index rather than a table-level UNIQUE because
+-- It indexes the generated key columns rather than the nullable originals:
 -- period_start is NULL for point-in-time facts (reserves, standardized
--- measure), and NULL is never equal to NULL -- a plain UNIQUE silently stops
--- deduplicating exactly the rows the panel is built from. COALESCE keeps the
--- comparison total, and is spelled the same way in Postgres.
+-- measure), and NULL is never equal to NULL, so a plain UNIQUE over the raw
+-- columns silently stops deduplicating exactly the rows the panel is built
+-- from.
 CREATE UNIQUE INDEX IF NOT EXISTS fact_identity_idx ON fact (
-    cik, concept_key, COALESCE(product, ''), period_end,
-    COALESCE(period_start, ''), unit, accession, extracted_by
+    cik, concept_key, product_key, period_end,
+    period_start_key, unit, accession, extracted_by
 );
 
 CREATE INDEX IF NOT EXISTS fact_panel_idx
@@ -135,8 +150,8 @@ SELECT cik, concept_key, value, unit, product, unit_rank,
 FROM (
     SELECT f.*,
            ROW_NUMBER() OVER (
-               PARTITION BY f.cik, f.concept_key, COALESCE(f.product, ''),
-                            f.period_end, COALESCE(f.period_start, '')
+               PARTITION BY f.cik, f.concept_key, f.product_key,
+                            f.period_end, f.period_start_key
                ORDER BY fl.filed_date DESC, f.unit_rank ASC, f.id DESC
            ) AS rn
     FROM fact f
@@ -151,7 +166,7 @@ WHERE rn = 1;
 -- silently resolved -- a quietly mixed cell is the failure mode that loses an
 -- account.
 CREATE VIEW IF NOT EXISTS fact_collision AS
-SELECT f.cik, f.concept_key, COALESCE(f.product, '') AS product,
+SELECT f.cik, f.concept_key, f.product_key AS product,
        f.period_end,
        COUNT(DISTINCT f.value) AS distinct_values,
        COUNT(DISTINCT f.unit)  AS distinct_units,
@@ -160,8 +175,8 @@ SELECT f.cik, f.concept_key, COALESCE(f.product, '') AS product,
        GROUP_CONCAT(DISTINCT f.unit) AS units
 FROM fact f
 JOIN filing fl ON fl.accession = f.accession
-GROUP BY f.cik, f.concept_key, COALESCE(f.product, ''), f.period_end,
-         COALESCE(f.period_start, ''), fl.filed_date
+GROUP BY f.cik, f.concept_key, f.product_key, f.period_end,
+         f.period_start_key, fl.filed_date
 HAVING COUNT(DISTINCT f.value) > 1;
 
 
@@ -178,13 +193,13 @@ HAVING COUNT(DISTINCT f.value) > 1;
 -- discontinuity so the cell can carry the caveat, which is the same rule the
 -- README applies to definition mismatch.
 CREATE VIEW IF NOT EXISTS unit_discontinuity AS
-SELECT cik, concept_key, COALESCE(product, '') AS product,
+SELECT cik, concept_key, product_key AS product,
        COUNT(DISTINCT unit) AS distinct_units,
        GROUP_CONCAT(DISTINCT unit) AS units,
        MIN(period_end) AS first_period,
        MAX(period_end) AS last_period
 FROM fact
-GROUP BY cik, concept_key, COALESCE(product, '')
+GROUP BY cik, concept_key, product_key
 HAVING COUNT(DISTINCT unit) > 1;
 
 
@@ -203,3 +218,38 @@ CREATE TABLE IF NOT EXISTS coverage_snapshot (
 );
 
 CREATE INDEX IF NOT EXISTS coverage_cik_idx ON coverage_snapshot (cik, measured_at DESC);
+
+
+-- Reserve arithmetic that does not add up.
+--
+-- Proved developed reserves are a subset of total proved, so developed must
+-- never exceed total and the two must be quoted in the same unit. Both
+-- failures happen in the wild, and both are invisible in a single-metric
+-- table -- you only see them by putting the two side by side.
+--
+-- This is the cheapest available check on the scale-label problem, because it
+-- needs no outside knowledge of how big a company is: it is internal to one
+-- filer's own numbers.
+CREATE VIEW IF NOT EXISTS reserve_consistency AS
+SELECT d.cik,
+       d.period_end,
+       d.value      AS developed_value,
+       d.unit       AS developed_unit,
+       t.value      AS total_value,
+       t.unit       AS total_unit,
+       d.accession  AS developed_accession,
+       t.accession  AS total_accession,
+       CASE WHEN d.unit = t.unit AND t.value <> 0
+            THEN d.value / t.value END AS ratio,
+       CASE
+           WHEN d.unit <> t.unit           THEN 'units differ'
+           WHEN t.value = 0                THEN 'total proved is zero'
+           WHEN d.value > t.value * 1.02   THEN 'developed exceeds total'
+           WHEN d.value = t.value          THEN 'developed equals total'
+       END AS issue
+FROM fact_current d
+JOIN fact_current t
+  ON  t.cik         = d.cik
+  AND t.period_end  = d.period_end
+  AND t.concept_key = 'proved_reserves_boe'
+WHERE d.concept_key = 'proved_developed_reserves_boe';

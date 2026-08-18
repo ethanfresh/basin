@@ -531,6 +531,15 @@
       What the dataset knows is questionable about itself. None of this is corrected silently:
       rewriting a filer's own disclosure would be worse than reporting it with the caveat attached.
     </p>
+    <h2>Reserve arithmetic that does not add up</h2>
+    <p class="note">
+      Proved developed reserves are a <strong>subset</strong> of total proved, so developed can
+      never exceed total and both must be quoted in the same unit. This is the cheapest check on
+      the scale-label problem because it needs no outside knowledge of how big a company is — it
+      compares one filer's numbers against its own.
+    </p>
+    <div class="scroll"><table id="reserve-table"></table></div>
+
     <h2>Unit discontinuities</h2>
     <p class="note">
       Series where the filer changed the declared unit partway through. Devon tags total proved
@@ -582,6 +591,7 @@ async function loadStats() {
     ["Filings cited", s.filings.toLocaleString(), ""],
     ["Periods", `${(s.earliest_period || "").slice(0, 4)}–${(s.latest_period || "").slice(0, 4)}`, ""],
     ["Flagged series", s.unit_discontinuities, s.unit_discontinuities ? "warn" : ""],
+    ["Reserve conflicts", s.reserve_issues, s.reserve_issues ? "warn" : ""],
   ].map(([label, value, cls]) =>
     `<div><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`
   ).join("");
@@ -773,6 +783,34 @@ async function loadCompanies() {
 async function loadQuality() {
   const data = await api("/api/quality");
   const labels = Object.fromEntries(concepts.map((c) => [c.key, c.label]));
+
+  const ISSUE_HINT = {
+    "units differ": "the two concepts are quoted in different units, so the subset relationship cannot be checked",
+    "developed exceeds total": "impossible: developed reserves are part of total proved",
+    "developed equals total": "possible but unusual — worth confirming against the filing",
+    "total proved is zero": "total proved is zero while developed is not",
+  };
+
+  $("#reserve-table").innerHTML = data.reserve_issues.length ? `
+    <thead><tr>
+      <th style="width:72px">Ticker</th><th>Company</th><th>Period</th>
+      <th class="num">Developed</th><th class="num">Total proved</th>
+      <th>Issue</th><th class="col-tag">Sources</th>
+    </tr></thead>
+    <tbody>${data.reserve_issues.map((r) => `
+      <tr>
+        <td class="ticker">${esc(r.ticker || "—")}</td>
+        <td class="name">${esc(r.name)}</td>
+        <td><span class="sub">${esc(r.period_end)}</span></td>
+        <td class="num"><span class="value">${fmt(r.developed_value, r.developed_unit)}</span><span class="unit">${esc(r.developed_unit)}</span></td>
+        <td class="num"><span class="value">${fmt(r.total_value, r.total_unit)}</span><span class="unit">${esc(r.total_unit)}</span></td>
+        <td><span class="tag warn" title="${esc(ISSUE_HINT[r.issue] || "")}">${esc(r.issue)}</span></td>
+        <td class="col-tag">
+          <a class="cite" href="${esc(r.developed_url)}" target="_blank" rel="noopener">developed</a>
+          <a class="cite" href="${esc(r.total_url)}" target="_blank" rel="noopener" style="margin-left:10px">total</a>
+        </td>
+      </tr>`).join("")}
+    </tbody>` : `<tbody><tr><td class="empty">No inconsistencies found.</td></tr></tbody>`;
 
   $("#discontinuity-table").innerHTML = data.unit_discontinuities.length ? `
     <thead><tr>
