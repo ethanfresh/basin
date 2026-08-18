@@ -53,15 +53,25 @@ class TestAliasResolution:
 
 
 class TestRowExtraction:
-    def test_extracts_from_winning_alias_only(self, companyfacts):
+    def test_ignores_a_rival_tag_name(self, companyfacts):
+        # ProvedDevelopedReservesVolume is present but lower in the order.
         rows = rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED)
-        assert {r.taxonomy for r in rows} == {"srt"}
+        assert {r.tag for r in rows} == {"ProvedDevelopedReservesBOE1"}
         assert {r.unit for r in rows} == {"MMBoe"}
+
+    def test_merges_the_same_tag_across_taxonomies(self, companyfacts):
+        # One series split by a taxonomy migration; dropping either half
+        # silently truncates the company's history.
+        rows = rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED)
+        assert {r.taxonomy for r in rows} == {"srt", "us-gaap"}
+        assert "2021-12-31" in {r.period_end for r in rows}
 
     def test_filters_to_requested_forms(self, companyfacts):
         rows = rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED)
         assert {r.form for r in rows} == {"10-K"}
-        assert [r.period_end for r in rows] == ["2023-12-31", "2024-12-31"]
+        assert [r.period_end for r in rows] == [
+            "2021-12-31", "2023-12-31", "2024-12-31",
+        ]
 
     def test_all_forms_when_filter_disabled(self, companyfacts):
         rows = rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED, forms=None)

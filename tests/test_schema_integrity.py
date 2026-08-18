@@ -174,3 +174,61 @@ class TestReserveSumCheck:
 
     def test_missing_undeveloped_skips_the_sum_check(self, conn):
         assert self._triple(conn, 700.0, None, 1000.0) is None
+
+
+class TestAliasValidation:
+    """Alias choice is measured against the filer's own arithmetic."""
+
+    @staticmethod
+    def _payload(dev, undev, total, unit="MBoe", periods=("2024-12-31",)):
+        def series(tag, values):
+            return {tag: {"units": {unit: [
+                {"end": p, "val": v, "accn": f"0001-25-{i:06d}",
+                 "form": "10-K", "filed": f"{int(p[:4]) + 1}-02-20"}
+                for i, (p, v) in enumerate(zip(periods, values))
+            ]}}}
+        facts = {"srt": {}}
+        facts["srt"].update(series("ProvedDevelopedReservesBOE1", dev))
+        facts["srt"].update(series("ProvedUndevelopedReserveBOE1", undev))
+        facts["srt"].update(series("ProvedDevelopedAndUndevelopedReserveNetEnergy", total))
+        return {"cik": 1090012, "facts": facts}
+
+    def test_coherent_family_validates(self):
+        from basin.facts.validation import validate_reserve_family
+
+        v = validate_reserve_family(self._payload([700.0], [300.0], [1000.0]))
+        assert v.status == "validated"
+        assert v.coherent_periods == 1
+
+    def test_family_that_never_agrees_is_incoherent(self):
+        from basin.facts.validation import validate_reserve_family
+
+        v = validate_reserve_family(self._payload([960.0], [1825.0], [865.0]))
+        assert v.status == "incoherent"
+        assert "no combination" in v.note
+
+    def test_family_that_stops_agreeing_is_drifted(self):
+        # Continental's shape: the identity holds for years, then stops.
+        # Averaging over history would call this validated and put a wrong
+        # number in the panel's most recent column.
+        from basin.facts.validation import validate_reserve_family
+
+        v = validate_reserve_family(
+            self._payload(
+                [500.0, 700.0, 960.0],
+                [500.0, 300.0, 1825.0],
+                [1000.0, 1000.0, 865.0],
+                periods=("2022-12-31", "2023-12-31", "2024-12-31"),
+            )
+        )
+        assert v.status == "drifted"
+        assert v.coherent_periods == 2 and v.tested_periods == 3
+
+    def test_missing_concept_is_insufficient(self):
+        from basin.facts.validation import validate_reserve_family
+
+        payload = self._payload([700.0], [300.0], [1000.0])
+        del payload["facts"]["srt"]["ProvedUndevelopedReserveBOE1"]
+        v = validate_reserve_family(payload)
+        assert v.status == "insufficient"
+        assert v.choices == {}

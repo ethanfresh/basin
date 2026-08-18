@@ -531,6 +531,15 @@
       What the dataset knows is questionable about itself. None of this is corrected silently:
       rewriting a filer's own disclosure would be worse than reporting it with the caveat attached.
     </p>
+    <h2>Alias choices that stopped holding</h2>
+    <p class="note">
+      Which XBRL tag a filer means by "total proved reserves" is chosen by measurement, not by a
+      global default: <strong>developed + undeveloped = total</strong> is an identity that a
+      combination of tags either satisfies or does not. These filers have no combination that
+      satisfies it, or had one that stopped working — the tag kept its name and changed its meaning.
+    </p>
+    <div class="scroll"><table id="alias-table"></table></div>
+
     <h2>Reserve arithmetic that does not add up</h2>
     <p class="note">
       Proved developed reserves are a <strong>subset</strong> of total proved, so developed can
@@ -793,6 +802,26 @@ async function loadQuality() {
     "total proved is zero": "total proved is zero while developed is not",
     "components do not sum to total": "developed + undeveloped disagrees with the total by more than 3% — usually means the tag chosen for one of the three does not mean what it appears to",
   };
+
+  const STATUS_HINT = {
+    drifted: "the identity held for earlier periods and fails in the most recent one",
+    incoherent: "no combination of this filer's tags satisfies developed + undeveloped = total",
+  };
+
+  $("#alias-table").innerHTML = data.alias_validation.length ? `
+    <thead><tr>
+      <th style="width:72px">Ticker</th><th>Company</th><th>Status</th>
+      <th class="num">Periods holding</th><th>What it means</th>
+    </tr></thead>
+    <tbody>${data.alias_validation.map((r) => `
+      <tr>
+        <td class="ticker">${esc(r.ticker || "—")}</td>
+        <td class="name">${esc(r.name)}</td>
+        <td><span class="tag warn" title="${esc(STATUS_HINT[r.status] || "")}">${esc(r.status)}</span></td>
+        <td class="num"><span class="value">${r.coherent_periods}</span><span class="unit">of ${r.tested_periods}</span></td>
+        <td><span class="sub">${esc(r.note)}</span></td>
+      </tr>`).join("")}
+    </tbody>` : `<tbody><tr><td class="empty">Every filer's reserve tags agree with their own arithmetic.</td></tr></tbody>`;
 
   $("#reserve-table").innerHTML = data.reserve_issues.length ? `
     <thead><tr>

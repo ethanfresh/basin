@@ -21,6 +21,10 @@ def conn(tmp_path):
     record_filing(
         connection, "0001090012-24-000010", "0001090012", "10-K", "2024-02-20"
     )
+    # The earlier-taxonomy half of the developed-reserves series.
+    record_filing(
+        connection, "0001090012-22-000010", "0001090012", "10-K", "2022-02-20"
+    )
     yield connection
     connection.close()
 
@@ -47,8 +51,9 @@ def _row(**overrides) -> FactRow:
 
 class TestInsert:
     def test_writes_rows(self, conn, companyfacts):
+        # Two srt periods plus the one carried under the older taxonomy.
         rows = rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED)
-        assert insert_facts(conn, rows) == 2
+        assert insert_facts(conn, rows) == 3
 
     def test_reingesting_the_same_filing_is_idempotent(self, conn):
         assert insert_facts(conn, [_row()]) == 1

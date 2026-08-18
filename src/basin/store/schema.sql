@@ -276,3 +276,27 @@ LEFT JOIN fact_current u
   AND u.period_end  = d.period_end
   AND u.concept_key = 'proved_undeveloped_reserves_boe'
 WHERE d.concept_key = 'proved_developed_reserves_boe';
+
+
+-- What the per-filer alias validation decided, and on what evidence.
+--
+-- Alias choice is a measurement here, not a default: developed + undeveloped
+-- = total is an identity that a *combination* of tags either satisfies or
+-- does not, so the combination whose numbers agree is the one that gets used.
+-- The evidence is kept because "we picked this tag" is a claim that has to be
+-- auditable like any other value in the store.
+CREATE TABLE IF NOT EXISTS alias_validation (
+    cik              TEXT NOT NULL,
+    family           TEXT NOT NULL,      -- 'reserves'
+    concept_key      TEXT NOT NULL,
+    taxonomy         TEXT,
+    tag              TEXT,
+    unit             TEXT,
+    status           TEXT NOT NULL,      -- validated | incoherent | insufficient
+    coherent_periods INTEGER NOT NULL DEFAULT 0,
+    tested_periods   INTEGER NOT NULL DEFAULT 0,
+    median_error     REAL,
+    note             TEXT,
+    checked_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (cik, family, concept_key)
+);

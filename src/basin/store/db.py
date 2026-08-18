@@ -147,3 +147,45 @@ def record_coverage(conn: sqlite3.Connection, coverage: CompanyCoverage) -> None
             for c in coverage.concepts
         ],
     )
+
+
+def record_alias_validation(
+    conn: sqlite3.Connection, validation, family: str = "reserves"
+) -> None:
+    """Store what the alias validator decided for one filer.
+
+    Replaces the previous verdict rather than appending: this is a statement
+    about the current registry and payload, not a historical fact about a
+    filing, so it carries no citation and nothing depends on its history.
+    """
+    if validation.choices:
+        rows = [
+            (
+                validation.cik, family, key, choice.taxonomy, choice.tag, choice.unit,
+                validation.status, validation.coherent_periods,
+                validation.tested_periods, validation.median_error, validation.note,
+            )
+            for key, choice in validation.choices.items()
+        ]
+    else:
+        rows = [
+            (
+                validation.cik, family, "*", None, None, None,
+                validation.status, 0, 0, None, validation.note,
+            )
+        ]
+    conn.executemany(
+        """
+        INSERT INTO alias_validation
+            (cik, family, concept_key, taxonomy, tag, unit, status,
+             coherent_periods, tested_periods, median_error, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cik, family, concept_key) DO UPDATE SET
+            taxonomy = excluded.taxonomy, tag = excluded.tag, unit = excluded.unit,
+            status = excluded.status, coherent_periods = excluded.coherent_periods,
+            tested_periods = excluded.tested_periods,
+            median_error = excluded.median_error, note = excluded.note,
+            checked_at = datetime('now')
+        """,
+        rows,
+    )

@@ -275,7 +275,22 @@ def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
         row["developed_url"] = filing_url(row["cik"], row["developed_accession"])
         row["total_url"] = filing_url(row["cik"], row["total_accession"])
 
+    alias_validation = _rows(
+        conn,
+        """
+        SELECT a.cik, c.name, c.ticker, a.status, a.coherent_periods,
+               a.tested_periods, a.median_error, a.note,
+               GROUP_CONCAT(a.concept_key || '=' || a.tag, ' | ') AS chosen
+        FROM alias_validation a
+        JOIN company c ON c.cik = a.cik
+        WHERE a.status IN ('drifted', 'incoherent')
+        GROUP BY a.cik
+        ORDER BY a.status, c.name
+        """,
+    )
+
     return {
+        "alias_validation": alias_validation,
         "unit_discontinuities": discontinuities,
         "collisions": collisions,
         "fallback_tags": fallback_tags,

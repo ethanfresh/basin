@@ -112,11 +112,39 @@ def resolve_alias(
     return None
 
 
+def resolve_alias_group(
+    payload: dict[str, Any], concept: ConceptSpec
+) -> list[tuple[str, str]]:
+    """Every taxonomy carrying the winning *tag name*, not just the first.
+
+    Filers migrate taxonomies mid-history: Continental reports developed
+    reserves under ``us-gaap:ProvedDevelopedReservesBOE1`` through FY2015 and
+    ``srt:`` with the identical tag name afterwards. Taking only the first
+    match silently truncated the series -- 2009 to 2015 simply vanished.
+
+    The same tag name in two taxonomies is the same disclosure, so both are
+    read and each row keeps its own taxonomy for provenance. Different tag
+    *names* stay a real choice, and are still decided by preference order.
+    """
+    winner = resolve_alias(payload, concept)
+    if winner is None:
+        return []
+    _, tag = winner
+    facts = payload.get("facts", {})
+    return [
+        (taxonomy, alias_tag)
+        for taxonomy, alias_tag in concept.aliases
+        if alias_tag == tag and alias_tag in facts.get(taxonomy, {})
+    ]
+
+
 def rows_for_concept(
     payload: dict[str, Any],
     concept: ConceptSpec,
     *,
     forms: Iterable[str] | None = ("10-K", "10-K/A"),
+    alias: tuple[str, str] | None = None,
+    preferred_unit: str | None = None,
 ) -> list[FactRow]:
     """Extract every fact row for one concept from a companyfacts payload.
 
@@ -124,45 +152,60 @@ def rows_for_concept(
     Amendments are kept alongside originals rather than replacing them — the
     store is append-only, and a citation must still resolve after a restatement.
     """
-    resolved = resolve_alias(payload, concept)
-    if resolved is None:
+    if alias is not None:
+        # A validated choice outranks the registry's global preference order:
+        # it was measured against this filer's own arithmetic.
+        _, chosen_tag = alias
+        facts = payload.get("facts", {})
+        resolved = [
+            (taxonomy, tag)
+            for taxonomy, tag in concept.aliases
+            if tag == chosen_tag and tag in facts.get(taxonomy, {})
+        ]
+    else:
+        resolved = resolve_alias_group(payload, concept)
+    if not resolved:
         return []
 
-    taxonomy, tag = resolved
     cik = cik_padded(payload["cik"])
-    entry = payload["facts"][taxonomy][tag]
     wanted_forms = set(forms) if forms is not None else None
 
     rows: list[FactRow] = []
-    for unit, observations in entry.get("units", {}).items():
-        for obs in observations:
-            form = obs.get("form", "")
-            if wanted_forms is not None and form not in wanted_forms:
-                continue
-            # 'end' and 'accn' are what make a row citable. A fact missing
-            # either cannot be cited, so it is not a fact Basin will store.
-            if "end" not in obs or "accn" not in obs or "val" not in obs:
-                continue
-            rows.append(
-                FactRow(
-                    cik=cik,
-                    concept_key=concept.key,
-                    taxonomy=taxonomy,
-                    tag=tag,
-                    value=float(obs["val"]),
-                    unit=unit,
-                    product=product_for_unit(unit),
-                    unit_rank=concept.unit_rank(unit),
-                    period_start=obs.get("start"),
-                    period_end=obs["end"],
-                    fiscal_year=obs.get("fy"),
-                    fiscal_period=obs.get("fp"),
-                    accession=obs["accn"],
-                    form=form,
-                    filed=obs.get("filed", ""),
-                    frame=obs.get("frame"),
+    for taxonomy, tag in resolved:
+        entry = payload["facts"][taxonomy][tag]
+        for unit, observations in entry.get("units", {}).items():
+            for obs in observations:
+                form = obs.get("form", "")
+                if wanted_forms is not None and form not in wanted_forms:
+                    continue
+                # 'end' and 'accn' are what make a row citable. A fact missing
+                # either cannot be cited, so it is not a fact Basin will store.
+                if "end" not in obs or "accn" not in obs or "val" not in obs:
+                    continue
+                rows.append(
+                    FactRow(
+                        cik=cik,
+                        concept_key=concept.key,
+                        taxonomy=taxonomy,
+                        tag=tag,
+                        value=float(obs["val"]),
+                        unit=unit,
+                        product=product_for_unit(unit),
+                        # A validated unit sorts ahead of everything, so the
+                        # cell shows the unit the arithmetic agreed on.
+                        unit_rank=(
+                            -1 if preferred_unit == unit else concept.unit_rank(unit)
+                        ),
+                        period_start=obs.get("start"),
+                        period_end=obs["end"],
+                        fiscal_year=obs.get("fy"),
+                        fiscal_period=obs.get("fp"),
+                        accession=obs["accn"],
+                        form=form,
+                        filed=obs.get("filed", ""),
+                        frame=obs.get("frame"),
+                    )
                 )
-            )
 
     rows.sort(
         key=lambda r: (r.period_end, r.product or "", r.unit_rank, r.filed, r.accession)
@@ -175,10 +218,25 @@ def rows_for_all_concepts(
     concepts: Iterable[ConceptSpec] = ALL_CONCEPTS,
     *,
     forms: Iterable[str] | None = ("10-K", "10-K/A"),
+    alias_overrides: dict[str, tuple[str, str]] | None = None,
+    unit_overrides: dict[str, str] | None = None,
 ) -> Iterator[FactRow]:
-    """Yield fact rows for every concept in the registry."""
+    """Yield fact rows for every concept in the registry.
+
+    ``alias_overrides`` and ``unit_overrides`` carry the per-filer decisions
+    from :mod:`basin.facts.validation`, which are measured rather than assumed
+    and so take precedence over the registry's ordering.
+    """
+    alias_overrides = alias_overrides or {}
+    unit_overrides = unit_overrides or {}
     for concept in concepts:
-        yield from rows_for_concept(payload, concept, forms=forms)
+        yield from rows_for_concept(
+            payload,
+            concept,
+            forms=forms,
+            alias=alias_overrides.get(concept.key),
+            preferred_unit=unit_overrides.get(concept.key),
+        )
 
 
 @dataclass(frozen=True)

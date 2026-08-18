@@ -55,9 +55,26 @@ def companyfacts() -> dict:
                 },
             },
             "us-gaap": {
-                # Also present, but srt is listed first in the alias order, so
-                # this must NOT win for the reserves concept.
+                # The SAME tag name under the other taxonomy, covering an
+                # earlier era. Filers migrate taxonomies mid-history, so this
+                # is one series split in two, not a rival candidate -- both
+                # halves must be read or the early years vanish.
                 "ProvedDevelopedReservesBOE1": {
+                    "units": {"MMBoe": [
+                        {
+                            "end": "2021-12-31",
+                            "val": 900.0,
+                            "accn": "0001090012-22-000010",
+                            "fy": 2021,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2022-02-20",
+                        }
+                    ]}
+                },
+                # A genuinely different tag name, lower in the preference
+                # order. This one must NOT win.
+                "ProvedDevelopedReservesVolume": {
                     "units": {"Boe": [
                         {
                             "end": "2024-12-31",

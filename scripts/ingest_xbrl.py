@@ -19,7 +19,15 @@ from pathlib import Path
 
 from basin.edgar import EdgarClient, NotFound, SECError, cik_padded
 from basin.facts import ALL_CONCEPTS, fetch_companyfacts, rows_for_all_concepts
-from basin.store import DEFAULT_DB_PATH, connect, insert_facts, record_filing, upsert_company
+from basin.facts.validation import validate_reserve_family
+from basin.store import (
+    DEFAULT_DB_PATH,
+    connect,
+    insert_facts,
+    record_alias_validation,
+    record_filing,
+    upsert_company,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,7 +56,18 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{cik_padded(cik)}  no companyfacts payload — skipped")
                     continue
 
-                rows = list(rows_for_all_concepts(payload, ALL_CONCEPTS, forms=forms))
+                # Choose the reserve tags whose arithmetic holds for this
+                # filer before reading any rows out of the payload.
+                validation = validate_reserve_family(payload, forms=forms)
+                rows = list(
+                    rows_for_all_concepts(
+                        payload,
+                        ALL_CONCEPTS,
+                        forms=forms,
+                        alias_overrides=validation.overrides,
+                        unit_overrides=validation.unit_overrides,
+                    )
+                )
                 upsert_company(conn, cik_padded(payload["cik"]), payload.get("entityName", ""))
 
                 # Register every filing the rows cite before writing the rows;
@@ -57,11 +76,17 @@ def main(argv: list[str] | None = None) -> int:
                     record_filing(conn, row.accession, row.cik, row.form, row.filed)
 
                 written = insert_facts(conn, rows)
+                record_alias_validation(conn, validation)
                 conn.commit()
+                mark = {"validated": "ok", "incoherent": "INCOHERENT",
+                        "insufficient": "--"}[validation.status]
                 print(
-                    f"{cik_padded(payload['cik'])}  {payload.get('entityName', '')}  "
-                    f"— {written} new / {len(rows)} rows across "
-                    f"{len({r.concept_key for r in rows})} concepts"
+                    f"{cik_padded(payload['cik'])}  {payload.get('entityName', '')[:34]:<36}"
+                    f"{written:>5} new / {len(rows):>5} rows  "
+                    f"{len({r.concept_key for r in rows})} concepts  "
+                    f"reserves:{mark}"
+                    + (f" {validation.coherent_periods}/{validation.tested_periods}"
+                       if validation.tested_periods else "")
                 )
     except SECError as exc:
         print(f"error: {exc}", file=sys.stderr)

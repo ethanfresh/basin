@@ -1,6 +1,7 @@
 from basin.store.db import (
     DEFAULT_DB_PATH,
     connect,
+    record_alias_validation,
     insert_facts,
     record_coverage,
     record_filing,
@@ -11,6 +12,7 @@ from basin.store.db import (
 __all__ = [
     "DEFAULT_DB_PATH",
     "connect",
+    "record_alias_validation",
     "insert_facts",
     "record_coverage",
     "record_filing",
