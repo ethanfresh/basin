@@ -229,7 +229,9 @@ What decides it is an economic identity. The standardized measure is a discounte
 
 Every resolution records the ratio it turned on and the readings it rejected, and a cell whose candidates are all implausible stays unresolved rather than guessed at.
 
-**What this still does not fix:** scale resolution trusts the *unit family*. Gulfport's reserves are tagged in `bbl` and resolve to 4.25 billion BOE at $0.80/BOE — arithmetically self-consistent, economically odd for a gas producer with roughly 4 Tcfe. A mislabelled unit family is invisible to this method, so cells implying a value per barrel outside the usual range carry the ratio as a warning.
+**The unit family comes from the document too.** Scale resolution alone trusted the tagged unit, and that label is sometimes wrong in a way no amount of scale arithmetic can see — Gulfport tags total proved reserves in `bbl` under a table headed `Total (Bcfe)`. Units are now read from the filing at verification time, both inline (`reserves were 3,617,856 MBOE`) and from column headers, and each becomes a candidate reading. Choosing needs a second, tighter band: read as barrels Gulfport implies $0.80/BOE, which clears the wide sanity check and is still not a number a producer reports; read as Bcfe it implies $4.80. Readings inside the typical $1.50–$50 range win first, then readings the document states over the one the filer tagged.
+
+Gulfport drops from 4.25 billion BOE to **708.8 million**, and Devon's `MMcfe` mislabel — flagged and deliberately left alone earlier in this README — resolves to **2,428 MMBoe at $7.73/BOE**, settled by evidence from the document rather than by assumption.
 
 This is the sharpest form of the comparability problem so far, and it lands in the Facts layer — the one that was supposed to be the easy, exact one. XBRL removes the risk of a *fabricated* number; it does not deliver a *comparable* one.
 
@@ -290,6 +292,12 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 ### Done
 
 - [x] **A comparable panel** — every filer ranked in one column, in BOE or USD. Resolving a magnitude takes two steps: the scale the document prints the figure at (measured), then which of the resulting readings is real (inferred, by testing the implied value per barrel against the standardized measure). 291 company-periods resolve, 83 stay ambiguous, and unresolved cells are shown unranked rather than guessed at.
+
+- [x] **A document corpus** — 10-K, 10-Q and 8-K filings per company stored as raw HTML under `data/corpus`, including EX-99.1 exhibits, because guidance is announced in the earnings release attached to an 8-K rather than in the 8-K itself. Fetching is the rate-limited step and happens once; parsing happens on every read, so improving the parser costs nothing.
+
+- [x] **Page and line locators** — every verified value carries the page, the line, the `Item N.` heading and the line as printed. Filings have real pages: EDGAR HTML separates them with `<hr>` carrying `page-break-after`. Clicking any value in the app opens the filing, page and line it came from.
+
+- [x] **Trends** — one KPI over time per company, on canonical magnitudes, annual periods only.
 
 - [x] **Document verification** — every stored value checked against the primary document of the filing it cites, recording the matched span and the scale the filing printed it at. 98% of 647 facts located; the residue is mostly zero-valued facts, which cannot be searched for meaningfully.
 
