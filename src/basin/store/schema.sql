@@ -463,3 +463,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
     content_rowid='rowid',
     tokenize='porter unicode61'
 );
+
+
+-- Vision cross-check: does a vision model reading the rendered page agree
+-- with what the text parser extracted?
+--
+-- The parser reads markup; a person reads the rendered page. The two have
+-- disagreed before in ways only looking caught -- the ix:header block
+-- occupying "sheet 1", header rows of bare years classified as data. This
+-- table records systematic checks of parser output against the pixels, one
+-- row per checked fact, so parser regressions show up as agreement drops.
+CREATE TABLE IF NOT EXISTS vision_check (
+    fact_id        INTEGER PRIMARY KEY REFERENCES fact(id),
+    sample_group   TEXT NOT NULL,      -- no_header | unit_corrected | control
+    value_present  INTEGER,            -- vision found the printed value on the page
+    agree_header   INTEGER,            -- vision header matches parser header
+    agree_folio    INTEGER,            -- vision page number matches stored folio
+    vision_header  TEXT,
+    vision_row     TEXT,
+    vision_unit    TEXT,
+    vision_folio   INTEGER,
+    parser_header  TEXT,
+    parser_folio   INTEGER,
+    note           TEXT,
+    model          TEXT,
+    checked_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
