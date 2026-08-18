@@ -271,19 +271,47 @@ will be live the moment revisions or production declines are added.
 
 ## Still open
 
-**Unit labels remain unreliable, and no source fixes them.** The tagged unit is
-wrong in the markup itself for several filers; the table header is right where
-a header exists, which is 57% of facts. For the rest the $/BOE test is the only
-check, and it is a coarse one — it cleared W&T at $97/BOE on a figure that was
-wrong by twelve orders of magnitude, and only a separate magnitude ceiling
-caught that.
+**Unit labels: now corrected by document evidence for 1,272 cells.** The
+header's unit tokens (not its prose — "Natural Gas Equivalent (Bcfe)" is a
+fine display string and a useless unit candidate) feed the resolver as
+candidates, and a reading the document states beats the one the filer tagged.
+Resolved company-periods rose from 328 to 342, ambiguous fell from 127 to 114,
+and canonical cells from 2,480 to 2,601. The tagged unit remains wrong in the
+markup for several filers, so this correction stays load-bearing rather than
+belt-and-braces.
 
-**127 company-periods remain ambiguous** and 44 unavailable, so their cells
+**114 company-periods remain ambiguous** and 43 unavailable, so their cells
 render unranked. Most lack a standardized measure to test against.
 
-**Table header coverage is 57%.** The misses are figures stated in prose rather
-than tables, and tables whose headers sit in a preceding sibling table — a
-layout the parser does not currently follow.
+**Table header coverage: 57% → 75%.** Diagnosing the missing 43% found two
+textual bugs, not a rendering problem. A header row of bare years ("2024
+2023") is entirely numeric and was classified as data, taking the real header
+with it — the single largest cause. And `header_for_value` searched all tables
+and returned the first string match anywhere in the document, so a fact could
+be assigned the header of an unrelated balance-sheet table; matching is now
+positional, preferring the table that contains the figure's markup offset.
+The remaining 25% are figures genuinely stated in prose.
+
+**The check was done against the rendered page, not just the text.** A
+`/debug/page` endpoint renders any sheet of any stored filing as the filer
+wrote it. Looking at Gulfport's sheet 96 and Diamondback's sheet 122 confirmed
+the coordinates land on the right page, the header alignment matches what a
+reader sees ("Oil (MBbls) · Natural Gas (MMcf) · Natural Gas Liquids (MBbls) ·
+Total (MBOE)"), and the product-split figures read exactly as ingested. It
+also surfaced two things the text alone hid: the same value appears in
+*different tables with different headers* (the region table's "Total (Bcfe)"
+against the rollforward's "Natural Gas Equivalent (Bcfe)"), which is why
+positional matching matters; and reserve tables are full of parenthesised
+negatives, confirming D8 goes live with rollforward concepts.
+
+**Two coordinate bugs found by looking.** Stripped `<head>`/`<style>` regions
+shrank the cleaned text, so raw-markup offsets and text offsets were drifting
+apart (96 characters today; a large embedded stylesheet would move a citation
+onto the wrong page) — dropped regions are now blanked to equal length, making
+the two coordinate systems identical by construction. And the hidden
+`<ix:header>` XBRL preamble was being treated as page content, putting its
+machine-readable text on "sheet 1" and making it findable by search; it is
+now blanked like `<head>`.
 
 **The 6:1 gas conversion is still a convention**, applied wherever a gas volume
 becomes BOE, and labelled as such on the cell. Nothing here changes that.

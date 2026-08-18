@@ -67,6 +67,38 @@ def favicon() -> FileResponse:
     return FileResponse(STATIC_DIR / "favicon-32.png", media_type="image/png")
 
 
+@app.get("/debug/page/{accession}/{document}/{sheet}")
+def debug_page(accession: str, document: str, sheet: int) -> Response:
+    """One sheet of a stored filing, rendered as the filer wrote it.
+
+    A visual check on the coordinate system: what the parser calls sheet N
+    should look like one printed page, with the figures where the locators
+    say they are. Debug-only — reads the corpus, not the store.
+    """
+    from basin.documents import corpus
+    from basin.documents.text import _PAGE_BREAK
+
+    raw = corpus.load_raw(accession, document)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="not in corpus")
+    bounds, previous = [], 0
+    for match in _PAGE_BREAK.finditer(raw):
+        bounds.append((previous, match.start()))
+        previous = match.end()
+    bounds.append((previous, len(raw)))
+    if not 1 <= sheet <= len(bounds):
+        raise HTTPException(status_code=404, detail=f"sheet out of range 1..{len(bounds)}")
+    start, end = bounds[sheet - 1]
+    return Response(
+        content=(
+            "<html><head><meta charset='utf-8'><style>"
+            "body{background:#fff;color:#000;padding:24px;max-width:1000px;margin:auto}"
+            "</style></head><body>" + raw[start:end] + "</body></html>"
+        ),
+        media_type="text/html",
+    )
+
+
 @app.get("/api/summary")
 def api_summary() -> dict:
     conn = _conn()

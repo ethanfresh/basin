@@ -399,3 +399,74 @@ class TestSectionAndFolio:
         doc = parse("<p>text</p><p>6</p><hr><p>more</p><p>7</p>")
         assert doc.pages == 2
         assert doc.folio(1) == 6 and doc.folio(2) == 7
+
+
+class TestHeaderCoverageFixes:
+    """The two failure modes behind 43% missing headers, verified fixed."""
+
+    YEARS = """
+    <table>
+      <tr><td>December 31,</td></tr>
+      <tr><td>2024</td><td>2023</td></tr>
+      <tr><td>Cash</td><td>2,960,151</td><td>4,059,182</td></tr>
+    </table>
+    """
+
+    def test_a_row_of_bare_years_is_a_header(self):
+        from basin.documents.tables import header_for_value, parse_tables
+
+        # "2024 2023" is entirely numeric and was classified as data, taking
+        # the real header with it. It names the columns.
+        found = header_for_value(parse_tables(self.YEARS), "2,960,151")
+        assert found == ("2024", "Cash")
+
+    def test_position_disambiguates_repeated_values(self):
+        from basin.documents.tables import header_for_value, parse_tables
+
+        raw = """
+        <table><tr><td>Oil (MMBbl)</td></tr><tr><td>Total</td><td>4,253</td></tr></table>
+        <p>filler</p>
+        <table><tr><td>Total (Bcfe)</td></tr><tr><td>Total proved</td><td>4,253</td></tr></table>
+        """
+        tables = parse_tables(raw)
+        near_second = raw.rindex("4,253")
+        header, _ = header_for_value(tables, "4,253", near=near_second)
+        # Without `near`, the first table's header would win.
+        assert header == "Total (Bcfe)"
+
+    def test_period_labels_survive_alongside_word_headers(self):
+        from basin.documents.tables import parse_tables
+
+        raw = """
+        <table>
+          <tr><td>Oil (MMBbl)</td><td>Gas (Bcf)</td></tr>
+          <tr><td>2024</td><td>2023</td></tr>
+          <tr><td>Total</td><td>19</td><td>3,612</td></tr>
+        </table>
+        """
+        table = parse_tables(raw)[0]
+        assert len(table.header_rows) == 2
+
+
+class TestOffsetIntegrity:
+    def test_cleaned_text_offsets_equal_raw_offsets(self):
+        from basin.documents.text import _DROP
+
+        raw = "<head><style>.a{}</style></head><body>Reserves 1,234</body>"
+        body = _DROP.sub(lambda m: " " * len(m.group(0)), raw)
+        # Every offset into the cleaned body must be valid in the raw HTML,
+        # or markup positions and text positions drift apart.
+        assert len(body) == len(raw)
+        assert body.index("1,234") == raw.index("1,234")
+
+    def test_hidden_ix_header_is_not_page_content(self):
+        from basin.documents.text import parse
+
+        raw = (
+            "<ix:header><xbrli:context id='c-1'>Total (Bcfe) hidden</xbrli:context></ix:header>"
+            "<p>Visible text 1,234</p>"
+        )
+        doc = parse(raw)
+        # The preamble's text must not be findable as page content.
+        assert "hidden" not in doc.text
+        assert "1,234" in doc.text

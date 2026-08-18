@@ -19,7 +19,13 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 
-_DROP = re.compile(r"(?is)<(script|style|head)[^>]*>.*?</\1>")
+# ix:header is the filing's hidden XBRL preamble: contexts, units and
+# dei facts, rendered display:none. It is data, not page content -- leaving it
+# in put the entire block on "sheet 1", made its text findable, and pushed a
+# reader's page numbers off by however many sheets it spanned.
+_DROP = re.compile(
+    r"(?is)<(script|style|head)[^>]*>.*?</\1>|<ix:header[^>]*>.*?</ix:header>"
+)
 _PAGE_BREAK = re.compile(r"(?i)<hr\b[^>]*>")
 _BLOCK = re.compile(r"(?i)</(td|th|tr|p|div|table|li|h[1-6])\s*>")
 _TAG = re.compile(r"<[^>]+>")
@@ -95,7 +101,13 @@ def parse(raw: str) -> Document:
     line. Joining those needs both, so the walk is done with `finditer` rather
     than `split`.
     """
-    body = _DROP.sub(" ", raw)
+    # Dropped regions are replaced by an equal number of spaces rather than a
+    # single one, so every offset into `body` is also an offset into `raw`.
+    # Otherwise a position found in the markup and a position found in the text
+    # are in different coordinate systems -- currently only 96 characters
+    # apart, but a filing with a large embedded stylesheet would shift a
+    # citation onto the wrong page.
+    body = _DROP.sub(lambda m: " " * len(m.group(0)), raw)
 
     lines: list[Line] = []
     starts: list[int] = []

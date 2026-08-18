@@ -23,6 +23,7 @@ from basin.documents import corpus as corpus_store
 from basin.documents import find_value, primary_document
 from basin.documents.inline import match_fact, tagged_figures
 from basin.documents.tables import header_for_value, parse_tables
+from basin.documents.headers import unit_hints
 from basin.documents.verify import searchable
 from basin.documents.corpus import fetch as fetch_document
 from basin.documents.text import parse, section_of, snippet
@@ -74,6 +75,22 @@ def load_documents(client: EdgarClient, cik: str, accession: str):
     return out
 
 
+_TABLE_CACHE: dict[int, list] = {}
+
+
+def _tables_for(raw: str) -> list:
+    """Tables of a document, parsed once per document rather than per fact.
+
+    A filing with 59 facts was re-parsing its tables 59 times, which turned a
+    ten-minute pass into forty. Keyed by identity because the raw strings are
+    already held for the duration of the run.
+    """
+    key = id(raw)
+    if key not in _TABLE_CACHE:
+        _TABLE_CACHE[key] = parse_tables(raw)
+    return _TABLE_CACHE[key]
+
+
 def locate_fact(fact: dict, loaded: list) -> dict:
     """Locate one fact, preferring the filing's markup over a string search.
 
@@ -99,11 +116,23 @@ def locate_fact(fact: dict, loaded: list) -> dict:
         # D2. The column header governing this figure, as a cross-check on the
         # unit it claims. Gulfport tags 3,612 Bcf of gas as "bbl"; the header
         # above it says Natural Gas (Bcf), and that is the honest answer.
-        header = header_for_value(parse_tables(raw), figure.shown)
+        #
+        # What gets stored is the unit tokens extracted from the header, not
+        # the header prose: "Natural Gas Equivalent (Bcfe)" is a fine display
+        # string and a useless unit candidate, and the resolver consumes this
+        # column as candidates.
+        header = header_for_value(_tables_for(raw), figure.shown, near=figure.start)
+        header_units: list[str] = []
+        if header and header[0]:
+            probe = f"{header[0]} 0"
+            header_units = [
+                h.unit for h in unit_hints(probe, len(header[0]) + 1, 1)
+            ]
         return {
             "status": "found",
             "method": "markup",
-            "units_nearby": header[0] or None if header else None,
+            "units_nearby": "|".join(header_units) or None,
+            "note": (f"column: {header[0]}; row: {header[1]}" if header and header[0] else None),
             "document": name,
             "printed": figure.shown,
             "scale_found": 10**figure.scale if figure.scale else 1.0,

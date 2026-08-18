@@ -398,7 +398,7 @@ def citation(conn: sqlite3.Connection, fact_id: int) -> dict[str, Any] | None:
                v.status AS verify_status, v.document, v.printed, v.page,
                v.line_no, v.section, v.line_text, v.source_span, v.hits,
                v.scale_found, v.scale_label, v.checked_at,
-               v.method, v.anchor, v.folio, v.scale_declared,
+               v.method, v.anchor, v.folio, v.scale_declared, v.note,
                sc.canonical_value, sc.canonical_unit, sc.divisor AS scale_divisor,
                sc.conversion_note, sc.usd_per_boe, sc.basis AS scale_basis,
                sc.rejected AS scale_rejected

@@ -1179,6 +1179,8 @@ async function openCitation(factId) {
         : c.method ? `<span class="tag warn">text search</span>` : null)}
     ${field("Printed as", c.printed ? `<span class="value">${esc(c.printed)}</span>` +
         (c.scale_found && c.scale_found !== 1 ? ` <span class="sub">(${esc(c.scale_label)})</span>` : "") : null)}
+    ${field("Table column", c.note && c.note.startsWith("column:")
+        ? `<span class="sub">${esc(c.note)}</span>` : null)}
     ${field("Occurrences", c.hits != null ? `${c.hits} in the document` : null)}
     ${field("XBRL tag", c.tag ? `<span class="sub">${esc(c.taxonomy)}:${esc(c.tag)}</span>` : null)}
     ${quote ? `<dl class="cite-field"><dt>As printed</dt><dd><div class="cite-quote">${highlighted}</div></dd></dl>` : ""}

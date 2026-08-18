@@ -31,6 +31,16 @@ _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"[\s  ​]+")
 _NUMERIC = re.compile(r"^[\(\)\-\+\$\s]*[\d,][\d,.\s]*[\)%]?$")
 
+# A row of bare years is a header, not data. Financial tables label their
+# columns "2024  2023", which is entirely numeric and was therefore read as a
+# data row -- taking the real header with it and leaving every cell beneath
+# unlabelled. This was the single largest cause of missing headers.
+_PERIOD_LABEL = re.compile(
+    r"(?i)^(?:(?:19|20)\d{2}|(?:January|February|March|April|May|June|July|August"
+    r"|September|October|November|December)\s+\d{1,2},?|\d{1,2}/\d{1,2}/\d{2,4}"
+    r"|Q[1-4]|FY\s?(?:19|20)?\d{2})$"
+)
+
 
 def _clean(fragment: str) -> str:
     return _WS.sub(" ", html_module.unescape(_TAG.sub(" ", fragment))).strip()
@@ -69,11 +79,16 @@ class Table:
         proved"), so raw column indices do not line up between them. Comparing
         the *sequence* of labels against the sequence of numeric cells does.
         """
+        single: list[str] = []
         for row in reversed(self.header_rows):
             labels = [c for c in row if c]
             if len(labels) > 1:
                 return labels
-        return []
+            if labels and not single:
+                single = labels
+        # A lone header cell still names the one numeric column beneath it --
+        # and is often exactly the units note ("(in thousands)").
+        return single
 
     def column_header(self, column: int) -> str:
         for row in reversed(self.header_rows):
@@ -95,11 +110,19 @@ def _row_cells(row_html: str) -> list[str]:
 
 
 def _is_header_row(cells: list[str]) -> bool:
-    """A header row is mostly words; a data row is mostly numbers."""
+    """A header row is mostly labels; a data row is mostly figures.
+
+    Period labels count as labels even though they are digits: a row reading
+    "2024 2023" names the columns beneath it.
+    """
     filled = [c for c in cells if c]
     if not filled:
         return False
-    numeric = sum(1 for c in filled if _NUMERIC.match(c))
+    if all(_PERIOD_LABEL.match(c) for c in filled):
+        return True
+    numeric = sum(
+        1 for c in filled if _NUMERIC.match(c) and not _PERIOD_LABEL.match(c)
+    )
     return numeric <= len(filled) // 3
 
 
@@ -153,15 +176,37 @@ def parse_tables(raw: str) -> list[Table]:
     return tables
 
 
-def header_for_value(tables: list[Table], printed: str) -> tuple[str, str] | None:
+def header_for_value(
+    tables: list[Table], printed: str, near: int | None = None
+) -> tuple[str, str] | None:
     """``(column header, row label)`` for a printed figure, if it is in a table.
 
     Used as a cross-check on the unit a fact claims: a value sitting under
     ``Total (Bcfe)`` is not in barrels, whatever the tagging says.
+
+    ``near`` is the figure's offset in the raw document, and it matters. The
+    same string occurs in many tables of a filing, and taking the first match
+    anywhere returned the header of an unrelated table -- for one Amplify fact,
+    a balance-sheet cell three tables away. Given a position, the table
+    containing it wins.
     """
     target = printed.strip()
-    for table in tables:
-        for cell in table.cells:
-            if cell.text == target:
+
+    def cells_of(table: Table):
+        return [c for c in table.cells if c.text == target]
+
+    if near is not None:
+        containing = [t for t in tables if t.start <= near <= t.end]
+        for table in containing:
+            for cell in cells_of(table):
                 return cell.header, cell.row_label
+        # Nothing in the containing table: fall back to the nearest one, so a
+        # figure just outside a table boundary still resolves sensibly.
+        ordered = sorted(tables, key=lambda t: min(abs(t.start - near), abs(t.end - near)))
+    else:
+        ordered = tables
+
+    for table in ordered:
+        for cell in cells_of(table):
+            return cell.header, cell.row_label
     return None
