@@ -122,3 +122,39 @@ class TestCoverage:
 
         assert coverage.error
         assert coverage.tagged_count == 0
+
+
+class TestProductInference:
+    """Product comes from a unit only when the unit names the product."""
+
+    def test_rate_units_identify_the_product(self):
+        from basin.facts.concepts import product_for_unit
+
+        assert product_for_unit("USD/bbl") == "oil"
+        assert product_for_unit("USD/Mcf") == "gas"
+        assert product_for_unit("USD/MMBTU") == "gas"
+
+    def test_volume_units_never_identify_a_product(self):
+        from basin.facts.concepts import product_for_unit
+
+        # BOE and "equivalent" units aggregate oil, gas and NGL.
+        for unit in ("Boe", "MBoe", "MMBoe", "bbl", "MBbls", "Bcfe", "Mcfe"):
+            assert product_for_unit(unit) is None, unit
+
+    def test_a_bare_gas_volume_is_not_labelled_gas(self):
+        from basin.facts.concepts import product_for_unit
+
+        # EQT states total proved reserves in MMcf and EOG in Bcf, and neither
+        # is a gas-only company: the filer dropped the "e" on an aggregate.
+        # Labelling these "gas" split EOG's panel row in two, and neither half
+        # was the total.
+        for unit in ("Bcf", "MMcf", "Mcf", "ft3"):
+            assert product_for_unit(unit) is None, unit
+
+    def test_reserve_rows_in_two_units_stay_one_cell(self, companyfacts):
+        # One tag, two units, no product labels -> one cell, decided by
+        # unit_rank, rather than two rows pretending to be different products.
+        from basin.facts.xbrl import rows_for_concept
+
+        rows = rows_for_concept(companyfacts, concepts.RESERVES_DEVELOPED)
+        assert all(r.product is None for r in rows)

@@ -78,8 +78,14 @@ def main(argv: list[str] | None = None) -> int:
                 written = insert_facts(conn, rows)
                 record_alias_validation(conn, validation)
                 conn.commit()
-                mark = {"validated": "ok", "incoherent": "INCOHERENT",
-                        "insufficient": "--"}[validation.status]
+                # .get, not [], so adding a status to the validator never
+                # crashes an ingest again -- 'drifted' did exactly that.
+                mark = {
+                    "validated": "ok",
+                    "drifted": "DRIFTED",
+                    "incoherent": "INCOHERENT",
+                    "insufficient": "--",
+                }.get(validation.status, validation.status)
                 print(
                     f"{cik_padded(payload['cik'])}  {payload.get('entityName', '')[:34]:<36}"
                     f"{written:>5} new / {len(rows):>5} rows  "

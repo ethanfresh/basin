@@ -57,38 +57,47 @@ class ConceptSpec:
 #
 # XBRL tags these disclosures with a product axis (oil / gas / NGL), but the
 # companyfacts API flattens dimensions away, so the axis member never arrives.
-# What survives is the unit, and for some units that is enough to recover the
-# product: a price in USD/bbl is an oil price, one in USD/Mcf is a gas price.
+# What survives is the unit -- and the unit only recovers the product for
+# *rates*. A price quoted in USD/bbl is an oil price and one in USD/Mcf is a
+# gas price, because the denominator names the thing being priced.
 #
-# Where the unit does NOT identify the product -- MBoe, MMBbls and friends can
-# all mean barrels-of-oil-equivalent for the whole company -- product stays
-# None rather than being guessed. A wrong product label is worse than a
-# missing one: it silently mislabels a cell instead of leaving it visibly
-# undimensioned.
+# Volumes are the opposite, and inferring from them was a mistake worth
+# spelling out. A reserve figure in Boe, MBoe, Bcfe or Mcfe is an *aggregate*
+# across oil, gas and NGL -- "equivalent" is what the e means -- so no product
+# label is truthful. Worse, a bare gas unit on an aggregate concept is usually
+# a filer omitting the e rather than reporting gas alone: EQT states total
+# proved reserves in MMcf and EOG in Bcf, and neither company is gas-only.
+#
+# On EOG that inference did real damage. companyfacts returned total proved
+# reserves under one tag in two units, 1,548 MMBbls and 8,222 Bcf, which are
+# the flattened oil and gas *components* -- EOG's actual total is about 3,750
+# MMBoe. Labelling the Bcf row "gas" made it a separate cell, so the panel
+# showed EOG twice and neither row was the total. The product dimension exists
+# to stop cells colliding; guessing it from a volume unit manufactured a
+# collision instead.
 
 _PRODUCT_BY_UNIT: dict[str, str] = {
-    # Liquids prices
+    # Liquids prices -- the denominator names the product.
     "USD/bbl": "oil",
     "USD/Bbl": "oil",
     "USD/bbls": "oil",
-    # Gas prices
+    # Gas prices.
     "USD/Mcf": "gas",
     "USD/MMBTU": "gas",
     "USD/MMBtu": "gas",
     "USD/Mmbtu": "gas",
     "USD/MMcf": "gas",
-    # Gas volumes
-    "Bcf": "gas",
-    "MMcf": "gas",
-    "Mcf": "gas",
+    "USD/Mcfe": "gas",
+    "USD/MMcfe": "gas",
 }
 
 
 def product_for_unit(unit: str) -> str | None:
-    """Recover the product dimension from a unit, or None if it is ambiguous.
+    """Recover the product from a unit, or None where it cannot be known.
 
-    BOE-style units are deliberately absent: they aggregate products, so
-    labelling one 'oil' would be a fabrication.
+    Only rate units qualify. Volume units are deliberately absent: BOE- and
+    equivalent-denominated figures aggregate products, and a bare gas unit on
+    an aggregate concept usually means the filer dropped the "e".
     """
     return _PRODUCT_BY_UNIT.get(unit)
 
