@@ -4,8 +4,9 @@
     {
       "name": "basin-web",
       "runtimeExecutable": "/Users/ethanfreshman/Desktop/basin/.venv/bin/python",
-      "runtimeArgs": ["-m", "uvicorn", "basin.web.app:app", "--port", "8422"],
-      "port": 8422
+      "runtimeArgs": ["-m", "basin.web"],
+      "port": 8422,
+      "autoPort": true
     }
   ]
 }

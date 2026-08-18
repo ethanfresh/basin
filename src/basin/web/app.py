@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from basin.store import queries
 from basin.store.db import DEFAULT_DB_PATH
@@ -46,8 +46,19 @@ def _conn() -> sqlite3.Connection:
 
 
 @app.get("/")
+@app.head("/")  # supervisors probe with HEAD; a bare @get answers 405
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/favicon.ico")
+def favicon() -> Response:
+    dot = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+        '<rect width="32" height="32" fill="#000"/>'
+        '<circle cx="16" cy="16" r="7" fill="#00e585"/></svg>'
+    )
+    return Response(content=dot, media_type="image/svg+xml")
 
 
 @app.get("/api/summary")
