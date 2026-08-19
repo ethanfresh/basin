@@ -12,6 +12,8 @@ plan -- rather than the implementation that currently delivers it.
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from basin.facts.xbrl import FactRow
@@ -133,6 +135,70 @@ class TestReserveConsistency:
         # A 1% overshoot is rounding between two tables in one filing, not a
         # contradiction worth a caveat on the cell.
         assert self._pair(conn, 1010.0, "MMBoe", 1000.0, "MMBoe")["issue"] is None
+
+
+class TestReserveProductAxis:
+    """The check pairs like with like, or it is not a check at all."""
+
+    def test_a_product_is_tested_against_its_own_total(self, conn):
+        # A filer splitting both concepts by product used to produce every
+        # pairing of the two, so oil developed was tested against gas total:
+        # nine rows from three products, seven of them comparing quantities
+        # that have no arithmetic relationship.
+        rows = []
+        for product, developed, total in [
+            ("oil", 700.0, 1000.0), ("gas", 300.0, 400.0), ("ngl", 100.0, 150.0),
+        ]:
+            rows += [
+                _row(concept_key="proved_developed_reserves_boe",
+                     product=product, value=developed),
+                _row(concept_key="proved_reserves_boe", product=product, value=total),
+            ]
+        insert_facts(conn, rows)
+
+        pairs = conn.execute(
+            "SELECT product, developed_value, total_value FROM reserve_consistency"
+        ).fetchall()
+        assert len(pairs) == 3
+        assert {(r["product"], r["developed_value"], r["total_value"]) for r in pairs} == {
+            ("oil", 700.0, 1000.0), ("gas", 300.0, 400.0), ("ngl", 100.0, 150.0),
+        }
+
+    def test_a_split_filer_is_not_flagged_by_the_split_alone(self, conn):
+        # Every product here is internally coherent, so nothing should be
+        # reported. Cross-product pairing flagged this shape as 'developed
+        # exceeds total' six times over.
+        rows = []
+        for product in ("oil", "gas", "ngl"):
+            rows += [
+                _row(concept_key="proved_developed_reserves_boe",
+                     product=product, value=700.0),
+                _row(concept_key="proved_reserves_boe", product=product, value=1000.0),
+            ]
+        insert_facts(conn, rows)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM reserve_consistency WHERE issue IS NOT NULL"
+        ).fetchone()[0] == 0
+
+
+class TestViewsFollowTheSchemaFile:
+    """A view holds no data, so the file is the only definition that counts."""
+
+    def test_an_edited_view_reaches_a_store_that_already_exists(self, tmp_path):
+        path = tmp_path / "stale.db"
+        connect(path).close()
+        with sqlite3.connect(path) as raw:
+            raw.execute("DROP VIEW reserve_consistency")
+            raw.execute(
+                "CREATE VIEW reserve_consistency AS SELECT 1 AS cik, 2 AS issue"
+            )
+
+        # CREATE VIEW IF NOT EXISTS would leave the stand-in in place, and the
+        # corrected definition would reach new databases only.
+        conn = connect(path)
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(reserve_consistency)")}
+        assert "developed_value" in columns and "product" in columns
+        conn.close()
 
 
 class TestReserveSumCheck:

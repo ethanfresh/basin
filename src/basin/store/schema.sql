@@ -399,46 +399,84 @@ CREATE INDEX IF NOT EXISTS coverage_cik_idx ON coverage_snapshot (cik, measured_
 --
 -- Neither check needs outside knowledge of how large a company is, which is
 -- what makes them cheap enough to run over the whole cohort.
+-- Read in one grouped pass rather than by joining fact_current to itself
+-- three times. The self-join materialised that window-function view once per
+-- leg and then nested-looped the results, which cost 4.4s of every page load
+-- once product-split reserve rows arrived; this is the same 1,703 rows in
+-- 0.16s, verified row-for-row against the join it replaces.
+--
+-- Product is part of the key. The join matched on company and period alone,
+-- which was harmless while these concepts arrived unsplit and wrong the moment
+-- they did not: a filer quoting developed and total for oil, gas and NGL
+-- separately produced every pairing of the two, so oil developed was tested
+-- against gas total. That inflated the pairings to 20,943 and the reported
+-- conflicts with them.
 CREATE VIEW IF NOT EXISTS reserve_consistency AS
-SELECT d.cik,
-       d.period_end,
-       d.value      AS developed_value,
-       d.unit       AS developed_unit,
-       u.value      AS undeveloped_value,
-       u.unit       AS undeveloped_unit,
-       t.value      AS total_value,
-       t.unit       AS total_unit,
-       d.accession  AS developed_accession,
-       t.accession  AS total_accession,
-       d.tag        AS developed_tag,
-       t.tag        AS total_tag,
-       CASE WHEN d.unit = t.unit AND t.value <> 0
-            THEN d.value / t.value END AS ratio,
+SELECT cik,
+       period_end,
+       product,
+       developed_value,
+       developed_unit,
+       undeveloped_value,
+       undeveloped_unit,
+       total_value,
+       total_unit,
+       developed_accession,
+       total_accession,
+       developed_tag,
+       total_tag,
+       CASE WHEN developed_unit = total_unit AND total_value <> 0
+            THEN developed_value / total_value END AS ratio,
        CASE
-           WHEN d.unit <> t.unit         THEN 'units differ'
-           WHEN t.value = 0              THEN 'total proved is zero'
+           WHEN developed_unit <> total_unit  THEN 'units differ'
+           WHEN total_value = 0               THEN 'total proved is zero'
            -- Ordered before the subset check on purpose. When all three are
            -- present and the two components agree with each other but not
            -- with the total, that localises the fault to the total's tag.
            -- 'developed exceeds total' would also be true, but says only that
            -- something is wrong, not which value to distrust.
-           WHEN u.value IS NOT NULL
-                AND u.unit = d.unit
-                AND ABS(d.value + u.value - t.value) > t.value * 0.03
-                                         THEN 'components do not sum to total'
-           WHEN d.value > t.value * 1.02 THEN 'developed exceeds total'
-           WHEN d.value = t.value        THEN 'developed equals total'
+           WHEN undeveloped_value IS NOT NULL
+                AND undeveloped_unit = developed_unit
+                AND ABS(developed_value + undeveloped_value - total_value)
+                    > total_value * 0.03
+                                              THEN 'components do not sum to total'
+           WHEN developed_value > total_value * 1.02
+                                              THEN 'developed exceeds total'
+           WHEN developed_value = total_value THEN 'developed equals total'
        END AS issue
-FROM fact_current d
-JOIN fact_current t
-  ON  t.cik         = d.cik
-  AND t.period_end  = d.period_end
-  AND t.concept_key = 'proved_reserves_boe'
-LEFT JOIN fact_current u
-  ON  u.cik         = d.cik
-  AND u.period_end  = d.period_end
-  AND u.concept_key = 'proved_undeveloped_reserves_boe'
-WHERE d.concept_key = 'proved_developed_reserves_boe';
+FROM (
+    SELECT cik,
+           period_end,
+           product,
+           MAX(CASE WHEN concept_key = 'proved_developed_reserves_boe'
+                    THEN value END)     AS developed_value,
+           MAX(CASE WHEN concept_key = 'proved_developed_reserves_boe'
+                    THEN unit END)      AS developed_unit,
+           MAX(CASE WHEN concept_key = 'proved_developed_reserves_boe'
+                    THEN accession END) AS developed_accession,
+           MAX(CASE WHEN concept_key = 'proved_developed_reserves_boe'
+                    THEN tag END)       AS developed_tag,
+           MAX(CASE WHEN concept_key = 'proved_undeveloped_reserves_boe'
+                    THEN value END)     AS undeveloped_value,
+           MAX(CASE WHEN concept_key = 'proved_undeveloped_reserves_boe'
+                    THEN unit END)      AS undeveloped_unit,
+           MAX(CASE WHEN concept_key = 'proved_reserves_boe'
+                    THEN value END)     AS total_value,
+           MAX(CASE WHEN concept_key = 'proved_reserves_boe'
+                    THEN unit END)      AS total_unit,
+           MAX(CASE WHEN concept_key = 'proved_reserves_boe'
+                    THEN accession END) AS total_accession,
+           MAX(CASE WHEN concept_key = 'proved_reserves_boe'
+                    THEN tag END)       AS total_tag
+    FROM fact_current
+    WHERE concept_key IN ('proved_developed_reserves_boe',
+                          'proved_undeveloped_reserves_boe',
+                          'proved_reserves_boe')
+    GROUP BY cik, period_end, product
+)
+-- The join this replaces was inner on developed and total, so a company-period
+-- holding only one of them produced no row at all.
+WHERE developed_value IS NOT NULL AND total_value IS NOT NULL;
 
 
 -- What the per-filer alias validation decided, and on what evidence.
