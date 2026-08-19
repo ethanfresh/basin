@@ -407,6 +407,12 @@ def panel_wide(
             "form": row["form"],
             "tag": f'{row["taxonomy"]}:{row["tag"]}',
             "verified": row["verify_status"] == "found",
+            # The verdict itself, not just whether it was favourable. A figure
+            # checked against its filing and not located is a different finding
+            # from one nothing has checked yet, and the panel colours them
+            # differently -- collapsing both to "not verified" hid which cells
+            # are a dead end and which are merely unvisited work.
+            "verify_status": row["verify_status"],
             "canonical_value": row["canonical_value"],
             "canonical_unit": row["canonical_unit"],
             "filing_url": filing_url(row["cik"], row["accession"]),

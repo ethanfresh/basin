@@ -1,9 +1,11 @@
-# The corpus and the store are the bulk of this repo -- tens of gigabytes that
-# the image must never carry. The store arrives on the volume at /data instead,
-# and the corpus is not needed to serve at all.
+# The corpus and the working store are the bulk of this project -- tens of
+# gigabytes the image must never carry. The one database that ships is
+# build/serving.db, the ~15MB facts-only store built by
+# scripts/build_serving_store.py, excepted from the *.db rule below.
 data/
 *.db
 *.sqlite3
+!build/serving.db
 
 .venv/
 .git/
