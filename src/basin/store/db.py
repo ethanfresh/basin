@@ -29,6 +29,14 @@ def connect(path: Path | str = DEFAULT_DB_PATH, *, create: bool = True) -> sqlit
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Wait for a writer rather than failing the moment one holds the lock.
+    #
+    # Several processes reach this store at once by design -- the dashboard
+    # reads it while an ingest or verification pass writes, and the indexing
+    # script runs for minutes at a time. Without this, SQLite raises "database
+    # is locked" immediately and a pass that was most of the way through a
+    # thousand filings dies on someone else's transaction.
+    conn.execute("PRAGMA busy_timeout = 30000")
     if create:
         # Columns first: schema.sql indexes columns that a store created before
         # they existed does not have yet, and an index on a missing column is a

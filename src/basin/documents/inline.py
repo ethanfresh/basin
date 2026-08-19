@@ -33,6 +33,21 @@ _ATTR = re.compile(r'(\w[\w:-]*)="([^"]*)"')
 _INNER_TAGS = re.compile(r"<[^>]+>")
 
 
+def half_unit_last_place(shown: str, scale: int) -> float | None:
+    """Half a unit in the last place *shown* prints, expressed in scaled units.
+
+    "3,613" prints to the unit, so at scale 6 it stands for anything within
+    500,000 of 3,613,000,000. "2.5" prints to a tenth, so at scale 9 it covers
+    50,000,000. This is the whole of the difference rounding can produce, and
+    therefore the whole of the difference a genuine match may have.
+    """
+    digits = shown.strip().replace(",", "").replace("(", "").replace(")", "").lstrip("-")
+    if not digits or not digits.replace(".", "").isdigit():
+        return None
+    decimals = len(digits.split(".")[1]) if "." in digits else 0
+    return 0.5 * (10 ** -decimals) * (10 ** scale)
+
+
 @dataclass(frozen=True)
 class TaggedFigure:
     """One figure as the filing itself marks it up."""
@@ -114,7 +129,7 @@ def match_fact(
     period_end: str,
     value: float,
     product: str | None = None,
-    tolerance: float = 0.005,
+    tolerance: float | None = None,
 ) -> TaggedFigure | None:
     """Find the figure a stored fact came from.
 
@@ -126,17 +141,37 @@ def match_fact(
     match beats a value-only match, and among equals the earliest occurrence
     wins so the result is stable.
     """
-    def close(a: float, b: float) -> bool:
-        if a == b:
+    def close(figure: TaggedFigure, target: float) -> bool:
+        """Whether *figure* can be the markup of *target*.
+
+        The only difference these two may legitimately have is the rounding the
+        filing applied when it printed the number, so the allowance comes from
+        the printed precision rather than from a flat percentage. A figure shown
+        as "3,613" at scale 6 stands for 3,613,000,000 give or take half of the
+        last printed place -- 500,000 -- and nothing else.
+
+        A flat 0.5% was far too loose at this magnitude. Diamondback's proved
+        reserves are 3,617,856 MBoe; the filing's capitalized-costs table
+        carries 3,613 at scale 6, which differs by 0.134% and was accepted.
+        Verification then recorded a printed scale of 1e6 taken from an
+        unrelated figure, and the scale resolver -- correctly, for that input --
+        could not resolve the reserves at all.
+        """
+        if figure.value == target:
             return True
-        scale = max(abs(a), abs(b))
-        return scale > 0 and abs(a - b) / scale <= tolerance
+        allowance = half_unit_last_place(figure.shown, figure.scale)
+        if allowance is None:
+            # No printed form to reason from; fall back to a tight relative
+            # tolerance rather than the old permissive one.
+            scale = max(abs(figure.value), abs(target))
+            return scale > 0 and abs(figure.value - target) / scale <= 5e-4
+        return abs(figure.value - target) <= allowance
 
     ranked: list[tuple[tuple[int, int, int], TaggedFigure]] = []
     for figure in figures:
         if figure.period_end != period_end:
             continue
-        if not close(figure.value, value):
+        if not close(figure, value):
             continue
         concept_hit = bool(concept_tag) and figure.concept.split(":")[-1] == concept_tag
         product_hit = (figure.product or None) == (product or None)
