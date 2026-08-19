@@ -84,20 +84,48 @@ def periods(conn: sqlite3.Connection, concept_key: str | None = None) -> list[st
     return [r["period_end"] for r in _rows(conn, sql)]
 
 
+def cohorts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The cohorts present in the store, with how many companies each holds.
+
+    Ordered by size, so the panel's default filter lands on the cohort the
+    store actually knows the most about rather than on an alphabetical accident.
+    """
+    sql = """
+        SELECT c.cohort,
+               COUNT(*) AS companies,
+               SUM(c.is_operator) AS operators,
+               SUM(EXISTS(SELECT 1 FROM fact f WHERE f.cik = c.cik)) AS with_facts
+        FROM company c
+        WHERE c.cohort IS NOT NULL
+        GROUP BY c.cohort
+        ORDER BY companies DESC
+    """
+    return _rows(conn, sql)
+
+
 def panel(
     conn: sqlite3.Connection,
     concept_key: str,
     period_end: str,
     product: str | None = None,
+    cohort: str | None = None,
 ) -> list[dict[str, Any]]:
     """One concept, one period, every company — the peer comparison table.
 
     Each row carries its accession, form and originating XBRL tag, plus the
     unit-discontinuity flag for that series, so a cell that needs a caveat
     arrives with the caveat attached rather than looking clean.
+
+    *cohort* is not a convenience filter. Comparison is meaningful within a
+    cohort and meaningless across one: reserves and lifting cost per BOE do not
+    describe a pipeline, and a table mixing an E&P with a midstream partnership
+    asserts a comparability that does not exist. Leaving it None returns every
+    cohort, which is correct for auditing the store and wrong for reading a
+    peer table -- so the panel UI always sends one.
     """
     sql = """
-        SELECT f.id, f.cik, c.name, c.ticker, c.basin,
+        SELECT f.id, f.cik, c.name, c.ticker, c.basin, c.cohort,
+               c.reporting_taxonomy, c.disclosure_regime, c.regime_note,
                f.value, f.unit, f.product,
                f.period_start, f.period_end, f.fiscal_year, f.fiscal_period,
                f.accession, f.form, f.taxonomy, f.tag,
@@ -128,8 +156,11 @@ def panel(
     if product:
         sql += " AND COALESCE(f.product, '') = ?"
         params += (product,)
+    if cohort:
+        sql += " AND c.cohort = ?"
+        params += (cohort,)
 
-    # Ordered by unit first, then magnitude *within* the unit.
+    # Ordered by unit, then by company, then by magnitude within the company.
     #
     # Ranking across units would be a lie. Filers disagree about whether a
     # value already has its unit's prefix applied -- Diamondback reports
@@ -137,13 +168,120 @@ def panel(
     # Devon reports 2,155 tagged "MMcfe" (scaled to match the label) -- so
     # (value, unit) does not determine magnitude, and a single sorted column
     # would rank by labelling convention rather than by size.
-    sql += " ORDER BY f.unit, f.value DESC"
+    #
+    # Within a unit, a company can occupy several rows: XBRL dimensions realized
+    # price and reserves by product, so oil, gas and NGL arrive separately. A
+    # plain value sort interleaves them -- one filer's oil, another's oil, then
+    # back to the first one's gas -- and the reader loses track of whose row
+    # they are on. Companies are therefore ranked by their largest product and
+    # kept contiguous, which is the ordering a peer table is read in.
+    sql += """
+        ORDER BY f.unit,
+                 MAX(f.value) OVER (PARTITION BY f.unit, f.cik) DESC,
+                 f.cik,
+                 f.value DESC
+    """
 
     rows = _rows(conn, sql, params)
     for row in rows:
         row["filing_url"] = filing_url(row["cik"], row["accession"])
         row["unit_changed"] = bool(row["unit_changed"])
     return rows
+
+
+LATEST_PERIOD = "latest"
+"""Sentinel period meaning "each company's own most recent"."""
+
+
+def panel_latest(
+    conn: sqlite3.Connection,
+    concept_key: str,
+    product: str | None = None,
+    cohort: str | None = None,
+) -> list[dict[str, Any]]:
+    """The panel, taking each company's most recently reported period.
+
+    Pinning one period_end is the more defensible thing to do and it costs
+    coverage twice over. Fiscal years do not line up -- 7 cohort members close
+    in March, June, September or October rather than December -- so a December
+    filter drops them entirely rather than showing them a quarter out. And
+    filers stop tagging: for proved developed reserves, the best single period
+    reaches 31 companies while their own latest reaches 38.
+
+    The cost is that the column mixes periods, and that cost is real: some
+    filers' newest tagged reserve figure is from 2011. So every row carries the
+    period it came from and how stale that is, and the caller is expected to
+    show both -- an undated latest-reported column would be the most quietly
+    misleading thing in the product.
+    """
+    sql = """
+        WITH ranked AS (
+            SELECT f.*, ROW_NUMBER() OVER (
+                       PARTITION BY f.cik, f.concept_key, COALESCE(f.product, '')
+                       ORDER BY f.period_end DESC
+                   ) AS recency
+            FROM fact_current f
+            WHERE f.concept_key = ?
+        )
+        SELECT ranked.id, ranked.cik, c.name, c.ticker, c.basin, c.cohort,
+               c.reporting_taxonomy, c.disclosure_regime, c.regime_note,
+               ranked.value, ranked.unit, ranked.product,
+               ranked.period_start, ranked.period_end,
+               ranked.fiscal_year, ranked.fiscal_period,
+               ranked.accession, ranked.form, ranked.taxonomy, ranked.tag,
+               ranked.extracted_by, ranked.source_span, ranked.section,
+               ranked.basis_note,
+               fl.filed_date,
+               (ud.cik IS NOT NULL) AS unit_changed,
+               ud.units AS series_units,
+               v.status AS verify_status, v.printed AS verify_printed,
+               v.scale_found AS verify_scale, v.hits AS verify_hits,
+               v.source_span AS verify_span, v.document AS verify_document,
+               sc.canonical_value, sc.canonical_unit, sc.divisor AS scale_divisor,
+               sc.conversion_note, sc.usd_per_boe, sc.basis AS scale_basis
+        FROM ranked
+        JOIN company c ON c.cik = ranked.cik
+        JOIN filing fl ON fl.accession = ranked.accession
+        LEFT JOIN unit_discontinuity ud
+               ON ud.cik = ranked.cik AND ud.concept_key = ranked.concept_key
+              AND ud.product = COALESCE(ranked.product, '')
+        LEFT JOIN fact_verification v ON v.fact_id = ranked.id
+        LEFT JOIN fact_scale sc ON sc.fact_id = ranked.id
+        WHERE ranked.recency = 1
+    """
+    params: tuple = (concept_key,)
+    if product:
+        sql += " AND COALESCE(ranked.product, '') = ?"
+        params += (product,)
+    if cohort:
+        sql += " AND c.cohort = ?"
+        params += (cohort,)
+    sql += """
+        ORDER BY ranked.unit,
+                 MAX(ranked.value) OVER (PARTITION BY ranked.unit, ranked.cik) DESC,
+                 ranked.cik,
+                 ranked.value DESC
+    """
+
+    rows = _rows(conn, sql, params)
+    newest = max((r["period_end"] for r in rows if r["period_end"]), default=None)
+    for row in rows:
+        row["filing_url"] = filing_url(row["cik"], row["accession"])
+        row["unit_changed"] = bool(row["unit_changed"])
+        row["periods_behind"] = _years_behind(row["period_end"], newest)
+    return rows
+
+
+def _years_behind(period_end: str | None, newest: str | None) -> int | None:
+    """Whole years between this row's period and the newest in the panel.
+
+    Reported rather than used to filter. A stale figure is still the filer's
+    most recent disclosure, and hiding it would misrepresent the panel as
+    complete; the reader decides whether five-year-old reserves are usable.
+    """
+    if not period_end or not newest:
+        return None
+    return int(newest[:4]) - int(period_end[:4])
 
 
 def unit_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -423,6 +561,120 @@ def citation(conn: sqlite3.Connection, fact_id: int) -> dict[str, Any] | None:
             f"{out['accession'].replace('-', '')}/{out['document']}"
         )
     return out
+
+
+def company_concepts(
+    conn: sqlite3.Connection, cohort: str | None = None
+) -> dict[str, list[str]]:
+    """Which KPIs each company actually has, keyed by CIK.
+
+    Fetched once and held by the caller rather than joined into the panel:
+    the panel shows one concept, and this answers what *else* is behind each
+    row. A filer's coverage does not change between period selections, so
+    re-querying it on every panel load would be waste.
+    """
+    sql = """
+        SELECT f.cik, f.concept_key
+        FROM fact_current f
+        JOIN company c ON c.cik = f.cik
+        WHERE c.cohort IS NOT NULL
+    """
+    params: tuple = ()
+    if cohort:
+        sql += " AND c.cohort = ?"
+        params = (cohort,)
+    sql += " GROUP BY f.cik, f.concept_key"
+
+    out: dict[str, list[str]] = {}
+    for row in _rows(conn, sql, params):
+        out.setdefault(row["cik"], []).append(row["concept_key"])
+    return out
+
+
+def company_history(
+    conn: sqlite3.Connection,
+    cik: str,
+    concept_key: str,
+    product: str | None = None,
+) -> dict[str, Any]:
+    """Everything one company has ever reported for one concept.
+
+    The panel shows a single period. This is what stands behind that cell: the
+    whole reported history, so a number can be read against the filer's own
+    past rather than only against its peers.
+
+    Series are split by ``(product, unit)`` rather than drawn as one line. Both
+    halves of that key matter. Product, because XBRL dimensions reserves and
+    realized price by oil, gas and NGL, and the companyfacts API flattens the
+    dimension away -- one line through all three would be three quantities
+    pretending to be a trend. Unit, because filers relabel: Devon tags proved
+    reserves ``MMBoe`` through FY2022 and ``MMcfe`` from FY2023 while the values
+    run continuously, and joining those points draws a change that never
+    happened. A break in the line is the honest rendering of a break in the
+    series.
+
+    Unlike :func:`trends` this keeps non-annual periods, because the question is
+    what this filer reported and when, not how peers compare.
+    """
+    sql = """
+        SELECT f.id, f.value, f.unit, f.product, f.period_end,
+               f.fiscal_year, f.fiscal_period, f.accession, f.form,
+               f.taxonomy, f.tag,
+               fl.filed_date,
+               sc.canonical_value, sc.canonical_unit,
+               v.status AS verify_status
+        FROM fact_current f
+        JOIN filing fl ON fl.accession = f.accession
+        LEFT JOIN fact_scale sc ON sc.fact_id = f.id
+        LEFT JOIN fact_verification v ON v.fact_id = f.id
+        WHERE f.cik = ? AND f.concept_key = ?
+    """
+    params: tuple = (cik, concept_key)
+    if product:
+        sql += " AND COALESCE(f.product, '') = ?"
+        params += (product,)
+    sql += " ORDER BY f.period_end"
+
+    rows = _rows(conn, sql, params)
+    company = conn.execute(
+        "SELECT ticker, name, cohort, reporting_taxonomy, disclosure_regime "
+        "FROM company WHERE cik = ?", (cik,)
+    ).fetchone()
+
+    series: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["product"] or "", row["unit"])
+        entry = series.setdefault(key, {
+            "product": row["product"],
+            "unit": row["unit"],
+            "points": [],
+        })
+        entry["points"].append({
+            "period": row["period_end"],
+            "value": row["value"],
+            "canonical_value": row["canonical_value"],
+            "canonical_unit": row["canonical_unit"],
+            "fact_id": row["id"],
+            "accession": row["accession"],
+            "form": row["form"],
+            "filed_date": row["filed_date"],
+            "tag": f'{row["taxonomy"]}:{row["tag"]}',
+            "verified": row["verify_status"] == "found",
+            "filing_url": filing_url(cik, row["accession"]),
+        })
+
+    ordered = sorted(series.values(), key=lambda s: (s["product"] or "", s["unit"]))
+    units = {s["unit"] for s in ordered}
+    return {
+        "cik": cik,
+        "ticker": company["ticker"] if company else None,
+        "name": company["name"] if company else cik,
+        "concept": concept_key,
+        "label": BY_KEY[concept_key].label if concept_key in BY_KEY else concept_key,
+        "series": ordered,
+        "periods": sorted({p["period"] for s in ordered for p in s["points"]}),
+        "unit_changed": len(units) > 1,
+    }
 
 
 def trends(

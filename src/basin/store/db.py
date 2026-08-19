@@ -30,8 +30,12 @@ def connect(path: Path | str = DEFAULT_DB_PATH, *, create: bool = True) -> sqlit
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     if create:
-        conn.executescript(schema_sql())
+        # Columns first: schema.sql indexes columns that a store created before
+        # they existed does not have yet, and an index on a missing column is a
+        # hard error. On a fresh store there is no table to alter, and the
+        # migration skips it -- so this order is correct in both directions.
         _add_missing_columns(conn)
+        conn.executescript(schema_sql())
         conn.commit()
     return conn
 
@@ -40,6 +44,17 @@ def connect(path: Path | str = DEFAULT_DB_PATH, *, create: bool = True) -> sqlit
 # leaves an existing table alone, so new columns need adding explicitly rather
 # than by rebuilding — the fact rows are expensive to re-fetch.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "company": {
+        "cohort": "TEXT",
+        "cohort_source": "TEXT",
+        "cohort_as_of": "TEXT",
+        "country": "TEXT",
+        "market_cap_musd": "REAL",
+        "reporting_taxonomy": "TEXT",
+        "taxonomy_note": "TEXT",
+        "disclosure_regime": "TEXT",
+        "regime_note": "TEXT",
+    },
     "fact_verification": {
         "page": "INTEGER",
         "line_no": "INTEGER",
@@ -72,25 +87,71 @@ def upsert_company(
     *,
     ticker: str | None = None,
     basin: str | None = None,
-    is_operator: bool = True,
+    is_operator: bool | None = None,
+    cohort: str | None = None,
+    cohort_source: str | None = None,
+    cohort_as_of: str | None = None,
+    country: str | None = None,
+    market_cap_musd: float | None = None,
+    reporting_taxonomy: str | None = None,
+    taxonomy_note: str | None = None,
+    disclosure_regime: str | None = None,
+    regime_note: str | None = None,
     notes: str | None = None,
 ) -> None:
     """Insert a cohort member, refreshing its descriptive fields if present.
 
     Companies are metadata, not facts — updating a ticker rewrites no history.
+
+    Descriptive fields are only overwritten when a value is supplied, so a
+    caller that knows about tickers does not blank out a cohort assigned by a
+    caller that knows about cohorts. COALESCE, not assignment.
     """
     conn.execute(
         """
-        INSERT INTO company (cik, ticker, name, basin, is_operator, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO company (cik, ticker, name, basin, is_operator,
+                             cohort, cohort_source, cohort_as_of,
+                             country, market_cap_musd,
+                             reporting_taxonomy, taxonomy_note,
+                             disclosure_regime, regime_note, notes)
+        VALUES (:cik, :ticker, :name, :basin, COALESCE(:is_operator, 1),
+                :cohort, :cohort_source, :cohort_as_of,
+                :country, :market_cap_musd,
+                :reporting_taxonomy, :taxonomy_note,
+                :disclosure_regime, :regime_note, :notes)
         ON CONFLICT(cik) DO UPDATE SET
-            ticker = excluded.ticker,
+            ticker = COALESCE(:ticker, ticker),
             name = excluded.name,
-            basin = excluded.basin,
-            is_operator = excluded.is_operator,
-            notes = excluded.notes
+            basin = COALESCE(:basin, basin),
+            is_operator = COALESCE(:is_operator, is_operator),
+            cohort = COALESCE(:cohort, cohort),
+            cohort_source = COALESCE(:cohort_source, cohort_source),
+            cohort_as_of = COALESCE(:cohort_as_of, cohort_as_of),
+            country = COALESCE(:country, country),
+            market_cap_musd = COALESCE(:market_cap_musd, market_cap_musd),
+            reporting_taxonomy = COALESCE(:reporting_taxonomy, reporting_taxonomy),
+            taxonomy_note = COALESCE(:taxonomy_note, taxonomy_note),
+            disclosure_regime = COALESCE(:disclosure_regime, disclosure_regime),
+            regime_note = COALESCE(:regime_note, regime_note),
+            notes = COALESCE(:notes, notes)
         """,
-        (cik, ticker, name, basin, int(is_operator), notes),
+        {
+            "cik": cik,
+            "ticker": ticker,
+            "name": name,
+            "basin": basin,
+            "is_operator": None if is_operator is None else int(is_operator),
+            "cohort": cohort,
+            "cohort_source": cohort_source,
+            "cohort_as_of": cohort_as_of,
+            "country": country,
+            "market_cap_musd": market_cap_musd,
+            "reporting_taxonomy": reporting_taxonomy,
+            "taxonomy_note": taxonomy_note,
+            "disclosure_regime": disclosure_regime,
+            "regime_note": regime_note,
+            "notes": notes,
+        },
     )
 
 
@@ -104,12 +165,23 @@ def record_filing(
     period_end: str | None = None,
     primary_doc: str | None = None,
 ) -> None:
-    """Register a filing so facts referencing it can be cited."""
+    """Register a filing so facts referencing it can be cited.
+
+    Only fills blanks. Two writers reach this table with different knowledge:
+    ingest_xbrl sees an accession on a fact and knows nothing about the
+    document, while fetch_filings reads the submissions index and knows the
+    primary document's filename. Whichever arrives second used to be discarded,
+    which left every filing ingested from facts with a NULL primary_doc
+    permanently. COALESCE lets the better-informed writer complete the row
+    without any writer being able to overwrite what is already known.
+    """
     conn.execute(
         """
         INSERT INTO filing (accession, cik, form, filed_date, period_end, primary_doc)
         VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(accession) DO NOTHING
+        ON CONFLICT(accession) DO UPDATE SET
+            period_end = COALESCE(period_end, excluded.period_end),
+            primary_doc = COALESCE(primary_doc, excluded.primary_doc)
         """,
         (accession, cik, form, filed_date, period_end, primary_doc),
     )
@@ -300,4 +372,57 @@ def record_scale(
         """,
         (fact_id, divisor, canonical_value, canonical_unit, conversion_note,
          basis, usd_per_boe, rejected, note),
+    )
+
+
+def record_succession(conn: sqlite3.Connection, succession) -> None:
+    """Record one registrant superseding another, with its evidence.
+
+    Replaces rather than appends: this is a statement about the current state of
+    EDGAR's registrant graph, not a historical fact about a filing, so re-running
+    the resolver should correct a previous verdict rather than accumulate them.
+    """
+    conn.execute(
+        """
+        INSERT INTO registrant_succession
+            (successor_cik, successor_name, predecessor_cik, predecessor_name,
+             accession, filed_date, status, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(successor_cik) DO UPDATE SET
+            successor_name = excluded.successor_name,
+            predecessor_cik = excluded.predecessor_cik,
+            predecessor_name = excluded.predecessor_name,
+            accession = excluded.accession,
+            filed_date = excluded.filed_date,
+            status = excluded.status,
+            note = excluded.note,
+            resolved_at = datetime('now')
+        """,
+        (succession.successor_cik, succession.successor_name,
+         succession.predecessor_cik, succession.predecessor_name,
+         succession.accession, succession.filed_date, succession.status,
+         succession.note),
+    )
+
+
+def record_producer_check(conn: sqlite3.Connection, check, cohort: str | None = None) -> None:
+    """Store whether a cohort member produces hydrocarbons, with its evidence."""
+    conn.execute(
+        """
+        INSERT INTO producer_check
+            (cik, cohort, verdict, concepts, phrase_hits, document,
+             documents_read, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cik) DO UPDATE SET
+            cohort = excluded.cohort,
+            verdict = excluded.verdict,
+            concepts = excluded.concepts,
+            phrase_hits = excluded.phrase_hits,
+            document = excluded.document,
+            documents_read = excluded.documents_read,
+            note = excluded.note,
+            checked_at = datetime('now')
+        """,
+        (check.cik, cohort, check.verdict, ",".join(check.concepts),
+         check.phrase_hits, check.document, check.documents_read, check.note),
     )

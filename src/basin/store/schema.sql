@@ -19,10 +19,108 @@ CREATE TABLE IF NOT EXISTS company (
     ticker        TEXT,
     name          TEXT NOT NULL,
     basin         TEXT,                      -- Permian, Appalachia, Bakken, ...
-    is_operator   INTEGER NOT NULL DEFAULT 1,-- 0 for trusts/midstream/misfiled
+    is_operator   INTEGER NOT NULL DEFAULT 1,-- 0 for trusts/royalty vehicles
+
+    -- The cohort. Comparison is legal within one and forbidden across, because
+    -- a cohort IS a KPI schema: reserves and lifting cost per BOE mean nothing
+    -- for a pipeline, and throughput and distribution coverage mean nothing for
+    -- a driller. Putting them in one table would assert a comparability that
+    -- does not exist, which is the specific failure this product cannot afford.
+    --
+    -- Sourced from Finviz's industry classification rather than from SIC, which
+    -- is too noisy to assign on: SIC 1311 sweeps in midstream, refiners,
+    -- royalty trusts and -- observed in the population -- a biotechnology
+    -- company. Recorded with its source and date because the assignment can
+    -- change: companies divest midstream assets and E&Ps convert to minerals
+    -- vehicles, and a cohort move has to be visible rather than silent.
+    cohort        TEXT,                      -- 'Oil & Gas E&P', 'Uranium', ...
+    cohort_source TEXT,                      -- 'finviz'
+    cohort_as_of  TEXT,                      -- ISO-8601 date of the pull
+
+    -- Domicile, not listing venue. A US-listed filer domiciled abroad files
+    -- 20-F or 40-F under IFRS rather than 10-K under US GAAP, so this predicts
+    -- whether the Facts layer can reach it at all.
+    country       TEXT,
+    market_cap_musd REAL,                    -- millions USD, as Finviz exports
+
+    -- Two independent axes, both measured rather than inferred from domicile.
+    --
+    -- reporting_taxonomy answers "can the Facts layer read this filer": which
+    -- XBRL namespace its financials use. Measured from the companyfacts payload,
+    -- because 4 of the 23 foreign-domiciled cohort members report us-gaap.
+    -- Reserve concepts are a US requirement living in the SEC's srt namespace
+    -- and have no IFRS counterpart, so a blank reserve column means "never
+    -- tagged by anyone" for an IFRS filer and "this filer did not tag it" for a
+    -- us-gaap one -- different findings that look identical without this.
+    --
+    -- disclosure_regime answers "do two numbers mean the same thing": which
+    -- reserve definitions the filer reports under. It follows the annual FORM,
+    -- not the accounting standard. 10-K and 20-F are both Subpart 1200; 40-F is
+    -- Canadian NI 51-101, where reserves use forecast prices, the headline is
+    -- 2P rather than proved, and values are pre-tax. Shell is IFRS and
+    -- comparable; Cenovus is IFRS and not. One field could not say that.
+    reporting_taxonomy TEXT,             -- 'us-gaap' | 'ifrs-full' | 'unknown'
+    taxonomy_note      TEXT,             -- namespace tag counts behind the call
+    disclosure_regime  TEXT,             -- 'subpart-1200' | 'ni-51-101'
+    regime_note        TEXT,             -- the form, and what it implies
+
     added_at      TEXT NOT NULL DEFAULT (datetime('now')),
     notes         TEXT
 );
+
+CREATE INDEX IF NOT EXISTS company_cohort_idx ON company (cohort);
+
+-- Basin presents companies by ticker and keys them by CIK.
+--
+-- The two identifiers fail in opposite directions. A CIK is assigned once and
+-- never reused. A ticker is released when a company delists and can later be
+-- reassigned to an unrelated filer -- so keying facts on one would let two
+-- companies' histories merge silently, which is the failure this store exists
+-- to prevent. Ticker is therefore the identity in URLs, panels and exports,
+-- and never the thing a fact points at.
+--
+-- NULL is meaningful: it means the filer has no current listing, not that the
+-- ticker is unknown. 14 of the first 94 companies are in this state -- taken
+-- private, acquired, or delisted -- and they still file, still carry facts, and
+-- still have to be citable. The index is partial so they do not collide.
+--
+-- '' and NULL both meant "no ticker" before that distinction was load-bearing.
+-- Only NULL survives a partial unique index, so the blanks are normalised here
+-- rather than in a one-off migration: schema_sql() runs on every connect, and a
+-- store that predates the index has to be able to open.
+UPDATE company SET ticker = NULL WHERE ticker = '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS company_ticker_idx
+    ON company (ticker) WHERE ticker IS NOT NULL;
+
+
+-- One registrant superseding another.
+--
+-- A redomiciliation or holding-company reorganisation gives the same business a
+-- new CIK. The SEC's ticker map follows the ticker to the new entity at once;
+-- the filing history stays behind. Reading only the new CIK returns nothing,
+-- which is indistinguishable from a filer that tags no data -- so the link has
+-- to be recorded, not inferred at read time.
+--
+-- Evidence, not name-matching: Rule 12g-3(a) makes the successor file Form
+-- 8-K12B, that filing names the predecessor, and the name is confirmed against
+-- EDGAR's 10-K filers. The accession is kept so the claim is citable like any
+-- other. status is 'resolved' or 'unconfirmed'; an unconfirmed row is a lead,
+-- not a fact, and nothing reads through it.
+CREATE TABLE IF NOT EXISTS registrant_succession (
+    successor_cik    TEXT PRIMARY KEY,
+    successor_name   TEXT,
+    predecessor_cik  TEXT,
+    predecessor_name TEXT,
+    accession        TEXT,               -- the 8-K12B that establishes it
+    filed_date       TEXT,
+    status           TEXT NOT NULL,      -- resolved | unconfirmed
+    note             TEXT,
+    resolved_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS succession_predecessor_idx
+    ON registrant_succession (predecessor_cik);
 
 
 -- One row per filing Basin has seen. Facts reference this, so a citation can
@@ -202,6 +300,29 @@ FROM fact
 GROUP BY cik, concept_key, product_key
 HAVING COUNT(DISTINCT unit) > 1;
 
+
+-- Whether a cohort member actually produces hydrocarbons.
+--
+-- Cohort comes from Finviz, which misclassifies: TGS is an Argentine gas
+-- pipeline sitting in Oil & Gas Integrated. A non-producer in a producing
+-- cohort renders as a blank row in a reserves panel, which reads as a filer
+-- that failed to tag something rather than one with nothing to report.
+--
+-- A verdict, not a fact about a filing, so it is replaced on re-run rather than
+-- appended. 'unknown' is distinct from 'non-producer' on purpose: the first
+-- means nothing was available to test, the second means the filing was read and
+-- holds no reserves.
+CREATE TABLE IF NOT EXISTS producer_check (
+    cik           TEXT PRIMARY KEY,
+    cohort        TEXT,
+    verdict       TEXT NOT NULL,      -- producer | non-producer | unknown
+    concepts      TEXT,               -- reserve concepts tagged, comma-separated
+    phrase_hits   INTEGER NOT NULL DEFAULT 0,
+    document      TEXT,               -- what was read, so it can be re-checked
+    documents_read INTEGER NOT NULL DEFAULT 0,
+    note          TEXT,
+    checked_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Coverage snapshots, so "which concepts does this filer tag" is measured over
 -- time rather than re-guessed. Feeds the cohort-selection decision.

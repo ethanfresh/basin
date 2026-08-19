@@ -188,11 +188,21 @@ OIL_AND_GAS_REVENUE = ConceptSpec(
         ("us-gaap", "OilAndGasRevenue"),
         ("us-gaap", "OilAndGasSalesRevenue"),
         ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
+        # IFRS filers -- 19 of the 23 foreign-domiciled cohort members report
+        # under ifrs-full rather than us-gaap. The product-specific tags come
+        # first for the same reason as above: bare Revenue is the whole company.
+        ("ifrs-full", "RevenueFromSaleOfOilAndGasProducts"),
+        ("ifrs-full", "RevenueFromSaleOfCrudeOil"),
+        ("ifrs-full", "RevenueFromSaleOfNaturalGas"),
+        ("ifrs-full", "RevenueFromContractsWithCustomers"),
+        ("ifrs-full", "Revenue"),
     ),
     preferred_units=("USD",),
     notes="The contract-with-customer tag is last on purpose: it is total "
     "revenue, not oil and gas revenue, so it is a fallback and the basis "
-    "difference must reach the cell.",
+    "difference must reach the cell. The same caveat applies to ifrs-full "
+    "Revenue, and more sharply for an integrated filer whose revenue is "
+    "mostly refined product.",
 )
 
 CAPEX = ConceptSpec(
@@ -202,10 +212,34 @@ CAPEX = ConceptSpec(
         ("us-gaap", "PaymentsToAcquireOilAndGasProperty"),
         ("us-gaap", "PaymentsToExploreAndDevelopOilAndGasProperties"),
         ("us-gaap", "PaymentsToAcquirePropertyPlantAndEquipment"),
+        ("ifrs-full", "PurchaseOfOilAndGasAssets"),
+        ("ifrs-full", "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"),
+        ("ifrs-full", "AdditionsOtherThanThroughBusinessCombinationsPropertyPlantAndEquipment"),
     ),
     preferred_units=("USD",),
     notes="Guided capex is not tagged anywhere; it comes from 8-K EX-99.1.",
 )
+
+
+# --- What IFRS does not carry, and the trap in looking for it --------------
+#
+# The reserve, production and standardized-measure concepts above have no
+# ifrs-full equivalent, and this is not an oversight in the registry. Reserve
+# disclosure is a US requirement -- Regulation S-K Subpart 1200 and ASC 932 --
+# so the concepts live in the SEC's own ``srt`` namespace. IFRS has no
+# hydrocarbon reserve taxonomy at all. A sweep of every ifrs-full tag across the
+# foreign-domiciled cohort found exploration expense, oil and gas revenue and
+# asset purchases, and nothing describing a reserve base or a production volume.
+#
+# The trap: ifrs-full *does* define ``OtherReserves`` and
+# ``ReserveOfExchangeDifferencesOnTranslation``, tagged by 9 and 4 of these
+# filers. Those are equity reserves -- retained amounts on the balance sheet --
+# and have nothing to do with hydrocarbons. A name-matched alias would populate
+# a reserves column with shareholders' equity, in the right units, looking
+# entirely plausible. They are deliberately absent from the registry.
+#
+# So for an IFRS filer the Facts layer reaches revenue and capex, and reserves
+# and production are extraction-layer work against the 20-F text.
 
 
 # --- Known gaps: required disclosures the sampling found rarely tagged -----
