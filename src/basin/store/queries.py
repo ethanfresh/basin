@@ -29,24 +29,56 @@ def _rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict[s
     return [dict(r) for r in conn.execute(sql, params)]
 
 
-def summary(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Headline counts for the dataset as a whole."""
-    one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+def summary(conn: sqlite3.Connection, cohort: str | None = None) -> dict[str, Any]:
+    """Headline counts, for one cohort or for the whole store.
+
+    Every count is scoped together or none of them are. A count that quietly
+    spans a different population than the view it sits above is worse than no
+    count: reserve conflicts read 8,062 over a 75-company grid, and most of that
+    number belonged to companies that were never in scope -- SIC-1311 residue
+    and filers since acquired. Read as a worklist it was mostly work that does
+    not exist.
+    """
+    def one(sql: str, *, joins: str = "", where: str = "") -> Any:
+        """Run a count, adding the company join only when a cohort is selected."""
+        if cohort:
+            clause = f"{where} AND c.cohort = ?" if where else "WHERE c.cohort = ?"
+            return conn.execute(f"{sql} {joins} {clause}", (cohort,)).fetchone()[0]
+        return conn.execute(f"{sql} {where}").fetchone()[0]
+
+    # Facts reach company directly; verification and scale reach it through fact.
+    via_company = "JOIN company c ON c.cik = f.cik"
+    via_fact = "JOIN fact f ON f.id = v.fact_id JOIN company c ON c.cik = f.cik"
+
     return {
-        "companies": one("SELECT COUNT(*) FROM company"),
-        "facts": one("SELECT COUNT(*) FROM fact"),
-        "cells": one("SELECT COUNT(*) FROM fact_current"),
-        "filings": one("SELECT COUNT(*) FROM filing"),
-        "concepts": one("SELECT COUNT(DISTINCT concept_key) FROM fact"),
-        "earliest_period": one("SELECT MIN(period_end) FROM fact"),
-        "latest_period": one("SELECT MAX(period_end) FROM fact"),
-        "unit_discontinuities": one("SELECT COUNT(*) FROM unit_discontinuity"),
-        "verified": one("SELECT COUNT(*) FROM fact_verification WHERE status='found'"),
-        "verify_checked": one("SELECT COUNT(*) FROM fact_verification"),
-        "comparable": one("SELECT COUNT(*) FROM fact_scale"),
-        "collisions": one("SELECT COUNT(*) FROM fact_collision"),
+        "cohort": cohort,
+        "companies": one("SELECT COUNT(*) FROM company c"),
+        "facts": one("SELECT COUNT(*) FROM fact f", joins=via_company),
+        "cells": one("SELECT COUNT(*) FROM fact_current f", joins=via_company),
+        "filings": one("SELECT COUNT(*) FROM filing f", joins=via_company),
+        "concepts": one("SELECT COUNT(DISTINCT f.concept_key) FROM fact f", joins=via_company),
+        "earliest_period": one("SELECT MIN(f.period_end) FROM fact f", joins=via_company),
+        "latest_period": one("SELECT MAX(f.period_end) FROM fact f", joins=via_company),
+        "unit_discontinuities": one(
+            "SELECT COUNT(*) FROM unit_discontinuity f",
+            joins="JOIN company c ON c.cik = f.cik",
+        ),
+        "verified": one(
+            "SELECT COUNT(*) FROM fact_verification v", joins=via_fact,
+            where="WHERE v.status = 'found'",
+        ),
+        "verify_checked": one("SELECT COUNT(*) FROM fact_verification v", joins=via_fact),
+        "comparable": one(
+            "SELECT COUNT(*) FROM fact_scale v", joins=via_fact,
+        ),
+        "collisions": one(
+            "SELECT COUNT(*) FROM fact_collision f",
+            joins="JOIN company c ON c.cik = f.cik",
+        ),
         "reserve_issues": one(
-            "SELECT COUNT(*) FROM reserve_consistency WHERE issue IS NOT NULL"
+            "SELECT COUNT(*) FROM reserve_consistency f",
+            joins="JOIN company c ON c.cik = f.cik",
+            where="WHERE f.issue IS NOT NULL",
         ),
     }
 

@@ -648,10 +648,7 @@
 </header>
 
 <div id="stats-wrap" hidden>
-  <p class="stats-caption">
-    Across the whole store, every cohort and every company ever ingested — not the grid below,
-    which is scoped to the selected cohort.
-  </p>
+  <p class="stats-caption" id="stats-caption"></p>
   <div class="stats" id="stats"></div>
 </div>
 
@@ -858,7 +855,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
 // ---- masthead stats ----
 
 async function loadStats() {
-  const s = await api("/api/summary");
+  const s = await api(`/api/summary${cohort ? `?cohort=${encodeURIComponent(cohort)}` : ""}`);
   $("#stats").innerHTML = [
     ["Companies", s.companies, ""],
     ["Facts", s.facts.toLocaleString(), ""],
@@ -871,6 +868,13 @@ async function loadStats() {
   ].map(([label, value, cls]) =>
     `<div><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`
   ).join("");
+
+  // Say which population these count, because the number changes with it and a
+  // count that spans a different set than the grid below is worse than none.
+  $("#stats-caption").textContent = cohort
+    ? `Across ${cohort} — the same companies as the grid below.`
+    : "Across the whole store, including companies that were never in a cohort "
+      + "and filers since acquired or taken private.";
 }
 
 // ---- panel ----
@@ -1147,6 +1151,7 @@ async function loadCohorts() {
       // Coverage caches its render, so drop it: whichever view is on screen
       // reloads now, and the other picks up the new cohort when it is opened.
       loaded.delete("coverage");
+      loadStats();             // the headline counts move with the cohort too
       reload();
       if (id === "#coverage-cohort-filter") loaded.add("coverage");
     });
@@ -1682,7 +1687,6 @@ $("#normalize").addEventListener("change", loadPanel);
 $("#trend-concept").addEventListener("change", loadTrends);
 $("#trend-normalize").addEventListener("change", loadTrends);
 
-loadStats();
 $("#history-close").addEventListener("click", () => { $("#history").hidden = true; });
 $("#history-normalize").addEventListener("change", renderHistory);
 makeDraggable($("#history"), $("#history-bar"));
@@ -1700,7 +1704,10 @@ document.addEventListener("pointerdown", (e) => {
 });
 
 $("#stats-wrap").hidden = true;
-loadCohorts().then(loadKpiIndex).then(loadConcepts);
+// Stats after cohorts, not alongside: loadCohorts picks the default cohort, and
+// counting before it is chosen would render store-wide totals under a caption
+// claiming they describe a cohort.
+loadCohorts().then(loadStats).then(loadKpiIndex).then(loadConcepts);
 </script>
 </body>
 </html>

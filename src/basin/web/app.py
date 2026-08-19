@@ -100,10 +100,10 @@ def debug_page(accession: str, document: str, sheet: int) -> Response:
 
 
 @app.get("/api/summary")
-def api_summary() -> dict:
+def api_summary(cohort: str | None = None) -> dict:
     conn = _conn()
     try:
-        return queries.summary(conn)
+        return queries.summary(conn, cohort)
     finally:
         conn.close()
 
