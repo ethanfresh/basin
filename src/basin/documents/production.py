@@ -134,6 +134,35 @@ _VOLUME_UNITS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
+
+# Filings that do not end in December say so in the column header: "Years Ended
+# June 30,". Hard-coding 12-31 puts Evolution Petroleum's FY2025 figures on a
+# December period it never reported, where they sit beside calendar-year peers
+# as though the periods matched. Eight cohort filers close on a month other
+# than December -- Barnwell and National Fuel Gas in September, Mexco in March,
+# Evolution and Tamboran in June, Trio in October.
+_MONTHS = {
+    "january": "01-31", "february": "02-28", "march": "03-31", "april": "04-30",
+    "may": "05-31", "june": "06-30", "july": "07-31", "august": "08-31",
+    "september": "09-30", "october": "10-31", "november": "11-30",
+    "december": "12-31",
+}
+_MONTH_DAY = re.compile(
+    r"(?i)\b(january|february|march|april|may|june|july|august|september"
+    r"|october|november|december)\s+(\d{1,2})\b"
+)
+
+
+def _month_day(header_rows) -> str:
+    """The fiscal month and day the header names, defaulting to 31 December."""
+    for row in header_rows:
+        for cell in row:
+            found = _MONTH_DAY.search(cell or "")
+            if found:
+                month = _MONTHS[found.group(1).lower()]
+                return f"{month[:2]}-{int(found.group(2)):02d}"
+    return "12-31"
+
 _NUMBER = re.compile(r"^\(?\$?\s*-?[\d,]+(?:\.\d+)?\s*\)?$")
 _CURRENCY_ONLY = re.compile(r"^[\$\s%()]*$")
 
@@ -219,12 +248,16 @@ def _years(table: Table) -> dict[int, str]:
     up with the sequence of figures in a row. A table whose header names no
     year yields nothing, because a value without a period is not a fact.
     """
+    close = _month_day(table.header_rows)
     for row in reversed(table.header_rows):
         years = [_YEAR.search(cell) for cell in row if cell]
         found = [m for m in years if m]
         if len(found) >= 1 and len(found) == len([c for c in row if c and _YEAR.search(c)]):
             labels = [c for c in row if c and _YEAR.search(c)]
-            return {i: f"{_YEAR.search(label).group(0)}-12-31" for i, label in enumerate(labels)}
+            return {
+                i: f"{_YEAR.search(label).group(0)}-{close}"
+                for i, label in enumerate(labels)
+            }
     return {}
 
 

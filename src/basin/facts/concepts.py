@@ -185,6 +185,14 @@ OIL_AND_GAS_REVENUE = ConceptSpec(
     key="oil_and_gas_revenue",
     label="Oil and gas revenue",
     aliases=(
+        # The ASC 932 supplemental concept, and the most precise of these: it
+        # names revenue from oil and gas *producing activities*, so it excludes
+        # the midstream, marketing and hedging lines that a bare Revenues tag
+        # sweeps in. Antero, EOG, Gulfport, AleAnna and Mineralys tag it and
+        # nothing else in this list, which is why they read as having no
+        # revenue at all.
+        ("srt", "ResultsOfOperationsRevenueFromOilAndGasProducingActivities"),
+        ("us-gaap", "ResultsOfOperationsRevenueFromOilAndGasProducingActivities"),
         ("us-gaap", "OilAndGasRevenue"),
         ("us-gaap", "OilAndGasSalesRevenue"),
         ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),

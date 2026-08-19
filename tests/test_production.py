@@ -196,3 +196,23 @@ class TestRevenueReconciliation:
             Crude oil (MBbls) | 11,771 | 7,048
         """)
         assert implied_revenue(production_readings(html), "2025-12-31") is None
+
+
+class TestFiscalYearEnd:
+    def test_a_non_calendar_year_end_is_read_from_the_header(self):
+        # Evolution Petroleum closes on 30 June. Hard-coding 31 December puts
+        # its figures on a period it never reported, beside calendar-year peers
+        # as though the periods matched.
+        html = (
+            "<table><tr><td>Years Ended June 30,</td><td></td><td></td></tr>"
+            "<tr><td></td><td>2025</td><td>2024</td></tr>"
+            "<tr><td>Production Volumes:</td><td></td><td></td></tr>"
+            "<tr><td>Crude oil (MBbls)</td><td>11,771</td><td>7,048</td></tr>"
+            "</table>"
+        )
+        assert {r.period_end for r in production_readings(html)} == {
+            "2025-06-30", "2024-06-30",
+        }
+
+    def test_december_remains_the_default(self):
+        assert "2025-12-31" in {r.period_end for r in production_readings(PRODUCTION_TABLE)}

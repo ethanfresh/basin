@@ -148,7 +148,29 @@ PRODUCTION = TableSpec(
     closable=frozenset({"price", "cost"}),
 )
 
-SPECS: dict[str, TableSpec] = {spec.name: spec for spec in (RESERVES, PRODUCTION)}
+CASHFLOW = TableSpec(
+    name="cashflow",
+    # ASC 932-235-50-31 fixes these line items, so the vocabulary is unusually
+    # stable -- the variation is in capitalisation and in whether the filer
+    # spells out "of discounted future net cash flows".
+    match=(
+        '"standardized measure" OR "standardised measure" '
+        'OR "future cash inflows" OR "future net cash flows"'
+    ),
+    categories=(
+        ("measure", re.compile(r"(?i)standardi[sz]ed\s+measure")),
+        ("inflows", re.compile(r"(?i)future\s+cash\s+inflows?")),
+        ("net", re.compile(r"(?i)future\s+net\s+cash\s+flows?")),
+        ("discount", re.compile(r"(?i)^\s*\(?\s*10\s*%|\bannual\s+discount\b")),
+    ),
+    # The measure alone is a citation; the measure with the build-up above it is
+    # a figure the filing checks for you.
+    closable=frozenset({"measure", "inflows", "net"}),
+)
+
+SPECS: dict[str, TableSpec] = {
+    spec.name: spec for spec in (RESERVES, PRODUCTION, CASHFLOW)
+}
 
 RESERVE_MATCH = RESERVES.match
 """Kept as a name because it reads better at call sites than ``RESERVES.match``."""
@@ -378,6 +400,11 @@ def reserve_hits(conn: sqlite3.Connection, **kwargs) -> list[DocumentReserveHits
 def production_hits(conn: sqlite3.Connection, **kwargs) -> list[DocumentReserveHits]:
     """:func:`table_hits` for the S-K 1204 production / price / cost table."""
     return table_hits(conn, PRODUCTION, **kwargs)
+
+
+def cashflow_hits(conn: sqlite3.Connection, **kwargs) -> list[DocumentReserveHits]:
+    """:func:`table_hits` for the ASC 932 standardized-measure note."""
+    return table_hits(conn, CASHFLOW, **kwargs)
 
 
 def documents_to_parse(

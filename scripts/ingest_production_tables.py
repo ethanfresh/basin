@@ -54,6 +54,7 @@ from basin.documents.production import (
     COST,
     PRICE,
     VOLUME,
+    VOLUME_TOLERANCE,
     ProductionReading,
     implied_revenue,
     production_readings,
@@ -103,36 +104,69 @@ def tables_in(raw: str) -> list[list[ProductionReading]]:
     return out
 
 
+def total_volume(readings: list[ProductionReading], period_end: str) -> float | None:
+    """The table's own equivalent-total production for one period, in BOE."""
+    for r in readings:
+        if r.concept_key == VOLUME and r.product is None and r.period_end == period_end:
+            return to_boe(r.value, r.unit)
+    return None
+
+
+def _best_by(
+    candidates: list[list[ProductionReading]],
+    reported: dict[str, float],
+    implied,
+    tolerance: float,
+) -> tuple[list[ProductionReading], float] | None:
+    """The candidate whose implied figure sits closest to *reported*."""
+    scored: list[tuple[float, list[ProductionReading]]] = []
+    for readings in candidates:
+        errors = [
+            abs(value - reported[period]) / reported[period]
+            for period in reported
+            if reported[period] and (value := implied(readings, period)) is not None
+        ]
+        if errors:
+            scored.append((min(errors), readings))
+    if not scored:
+        return None
+    scored.sort(key=lambda s: s[0])
+    error, best = scored[0]
+    return (best, error) if error <= tolerance else ([], error)
+
+
 def choose_table(
-    candidates: list[list[ProductionReading]], revenue: dict[str, float]
+    candidates: list[list[ProductionReading]],
+    revenue: dict[str, float],
+    volume: dict[str, float] | None = None,
 ) -> tuple[list[ProductionReading], str]:
     """The consolidated table among several, and why it was chosen.
 
-    Returns an empty list when the evidence does not settle it. A segment
-    table stored as the company's production is a wrong number, and a wrong
-    number costs more than a missing one.
+    Returns an empty list when the evidence does not settle it. A segment table
+    stored as the company's production is a wrong number, and a wrong number
+    costs more than a missing one.
     """
     if not candidates:
         return [], "no table"
     if len(candidates) == 1:
         return candidates[0], "only one table"
 
-    scored: list[tuple[float, list[ProductionReading]]] = []
-    for readings in candidates:
-        errors = []
-        for period, reported in revenue.items():
-            implied = implied_revenue(readings, period)
-            if implied and reported:
-                errors.append(abs(implied - reported) / reported)
-        if errors:
-            scored.append((min(errors), readings))
+    by_revenue = _best_by(candidates, revenue, implied_revenue, REVENUE_TOLERANCE)
+    if by_revenue and by_revenue[0]:
+        return by_revenue[0], f"reconciles to reported revenue ({by_revenue[1]:.1%})"
 
-    if scored:
-        scored.sort(key=lambda s: s[0])
-        best_error, best = scored[0]
-        if best_error <= REVENUE_TOLERANCE:
-            return best, f"reconciles to reported revenue ({best_error:.1%})"
-        return [], f"no table reconciles to revenue (best {best_error:.1%})"
+    # Volume is the weaker test -- it constrains the volume rows and says
+    # nothing about the price ones -- so it is only consulted where revenue
+    # could not decide, and it is held to a tighter tolerance because a
+    # production volume is reported exactly rather than averaged over a year.
+    by_volume = _best_by(candidates, volume or {}, total_volume, VOLUME_TOLERANCE)
+    if by_volume and by_volume[0]:
+        return by_volume[0], f"reconciles to reported production ({by_volume[1]:.1%})"
+
+    if by_revenue:
+        return [], f"no table reconciles to revenue (best {by_revenue[1]:.1%})"
+    if by_volume:
+        return [], f"no table reconciles to production (best {by_volume[1]:.1%})"
 
     # No revenue to check against. Accept only if every table agrees, which
     # happens when a filing simply repeats the same table.
@@ -199,6 +233,18 @@ def main(argv: list[str] | None = None) -> int:
     ):
         revenue[r["cik"]].setdefault(r["period_end"], r["value"])
 
+    # The second referent, for filers whose revenue is untagged. Only the
+    # equivalent-total rows: a per-product volume cannot be compared against a
+    # table's BOE total without the conversion this is meant to check.
+    volume: dict[str, dict[str, float]] = collections.defaultdict(dict)
+    for r in conn.execute(
+        "SELECT cik, period_end, value, unit FROM fact WHERE concept_key = "
+        "'production_volume' AND product IS NULL AND extracted_by LIKE 'xbrl%'"
+    ):
+        boe = to_boe(r["value"], r["unit"])
+        if boe:
+            volume[r["cik"]].setdefault(r["period_end"], boe)
+
     # The labelled test set: the filers that do tag these concepts.
     tagged = {
         (r["cik"], r["concept_key"], r["product"], r["period_end"]): (r["value"], r["unit"])
@@ -226,7 +272,11 @@ def main(argv: list[str] | None = None) -> int:
             counts["located, but no table the parser could read"] += 1
             continue
 
-        readings, why = choose_table(candidates, revenue.get(site.cik or "", {}))
+        readings, why = choose_table(
+            candidates,
+            revenue.get(site.cik or "", {}),
+            volume.get(site.cik or "", {}),
+        )
         counts[f"table choice: {why.split(' (')[0]}"] += 1
         if not readings:
             continue

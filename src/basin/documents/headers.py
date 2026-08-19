@@ -23,6 +23,7 @@ already resolves scale picks between them -- proposal here, disposal there.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 # Units worth recognising in a filing's prose or table headers.
@@ -89,3 +90,58 @@ def unit_hints(
             seen.add(hint.unit)
             unique.append(hint)
     return unique
+
+
+# The dollar scale a financial table declares, as a multiplier. Unlike a reserve
+# table, where the unit is a column header and the figure is the figure, a
+# financial table states its magnitude once -- in a caption above it, or in a
+# header cell -- and every number under it is silent about its own size. Reading
+# "6,986,566" as dollars where the filing means thousands is a factor of a
+# thousand, which is the error class this whole layer exists to avoid.
+_SCALE_WORDS: tuple[tuple[str, float], ...] = (
+    ("billions", 1e9),
+    ("millions", 1e6),
+    ("thousands", 1e3),
+)
+
+# Matches "(in thousands)", "(Thousands)", "(Dollars in millions)", "($ in
+# millions)", "(Millions of dollars)", "amounts in thousands". The word may or
+# may not be preceded by "in", which is why EQT's "(Thousands)" was missed by a
+# pattern that required it.
+_SCALE_RE = re.compile(
+    r"(?i)(?:\bin\s+|\bof\s+|\$\s*|\bamounts?\s+in\s+|^|\(|\s)"
+    r"(billions|millions|thousands)\b"
+)
+
+SCALE_LOOKBACK = 3_000
+"""How far above a table to read for its caption. Generous: the sentence that
+declares the scale is often separated from the table by a heading and a
+paragraph of definition."""
+
+
+def declared_scale(
+    text: str, offset: int, *, header_cells: Sequence[str] = (), lookback: int = SCALE_LOOKBACK
+) -> float | None:
+    """The dollar multiplier a table declares, or None when it declares none.
+
+    Two places are read, header cells first: a scale written into the table's
+    own header belongs to that table beyond argument, while a caption above it
+    could in principle belong to a different table on the same page. Where both
+    are present and disagree, the header wins for the same reason.
+
+    None is a refusal, not a default of 1. A financial figure whose magnitude
+    is a guess is worth less than no figure, so callers are expected to drop
+    the table rather than assume dollars.
+    """
+    for cell in header_cells:
+        match = _SCALE_RE.search(cell)
+        if match:
+            return dict(_SCALE_WORDS)[match.group(1).lower()]
+
+    head = text[max(0, offset - lookback) : offset]
+    matches = list(_SCALE_RE.finditer(head))
+    if matches:
+        # The nearest declaration wins: a filing states the scale again above
+        # each table, and an older one further up belongs to an earlier table.
+        return dict(_SCALE_WORDS)[matches[-1].group(1).lower()]
+    return None
