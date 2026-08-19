@@ -8,7 +8,6 @@ It is built for people who need this data and cannot justify an enterprise termi
 
 > **Status: Facts layer running, with a dashboard over it.** The XBRL client and fact store are built and have ingested the full SIC-1311 cohort — 94 companies, 5,650 facts, 805 cited filings — served by a read-only web dashboard. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
 >
-> *The name `Basin` is a working title — chosen because it is vertical-specific and avoids the collision with the unrelated "FinAgent" system from Zhang et al., KDD '24.*
 
 ---
 
