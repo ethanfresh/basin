@@ -186,14 +186,38 @@ def snippet(text: str, start: int, end: int, *, pad: int = 110) -> str:
 # break, then normalising the whitespace, is what makes the captured heading
 # usable -- and a canonical "Item 1" is stored apart from the display title so
 # the two are not conflated.
+#
+# The gap between number and title is any amount of horizontal space -- EQT
+# sets its headings with eight non-breaking spaces -- but at most one line
+# break, so the match cannot reach across a paragraph to borrow a title.
+_GAP = r"[^\S\n]*\n?[^\S\n]*"
 _SECTION_RE = re.compile(
-    r"(?im)^[ \t]*(Item)[\s\n]{0,4}(\d{1,2}[A-Z]?)\s*\.?[\s\n]{0,4}"
-    r"([A-Z][^\n]{0,90})$"
+    r"(?im)^[^\S\n]*(Item)" + _GAP + r"(\d{1,2}[A-Z]?)[^\S\n]*\.?" + _GAP
+    + r"([A-Z][^\n]{0,90})$"
 )
 
 # The printed folio: filings emit the page number immediately before the page
 # break, usually followed by the next page's running header.
 _FOLIO_RE = re.compile(r"(?s)(?:^|\n)\s*(?:Page\s+)?(\d{1,4})\s*$")
+
+# D9. The contents page lists every item heading before the body starts, so
+# "the last heading before this offset" answers Item 16 for anything early in
+# a 10-K -- a figure on page 11 was being filed under "Form 10-K Summary". A
+# contents row carries the page it points to, either at the end of its own
+# line ("Business .... 8") or on the next line, which is how the filing itself
+# distinguishes the listing from the section. One such row is not proof: an
+# empty "Item 6. [Reserved]" can sit just above a printed folio. A run of them
+# is, so rows are only discarded in company.
+#
+# A contents block restarts its numbering at each Part, so a restart does not
+# end it -- Chesapeake's 10-Q lists 1, 2, 3, 4 and then 1, 1A, 2 ... 6. What
+# does end it is a restart too short to be another Part: Comstock's real
+# Item 1 sits directly under the block and above its page's folio, which is a
+# contents row in every respect except that it is the section itself.
+_LISTING_TAIL = re.compile(r"[ \t.·\u2026-]*\d{1,4}\s*$")
+_LISTING_NEXT = re.compile(r"\n[ \t]*(?:Page[ \t]+)?\d{1,4}[ \t]*(?:\n|$)")
+_CONTENTS_RUN = 4
+_ITEM_NUMBER = re.compile(r"(?i)(\d+)([A-Z]?)")
 
 
 def line_of(text: str, offset: int) -> int:
@@ -208,27 +232,74 @@ def _heading(match: re.Match) -> tuple[str, str]:
     return f"Item {number}", f"Item {number}. {title}"
 
 
-def section_of(text: str, offset: int) -> str | None:
-    """The nearest preceding "Item N." heading, which is how filings are cited.
+def _is_listing(text: str, match: re.Match) -> bool:
+    """Does this heading point at a page, rather than start one?"""
+    if _LISTING_TAIL.search(match.group(3)):
+        return True
+    return bool(_LISTING_NEXT.match(text, match.end()))
 
-    Returns None rather than a guess when the match sits before any heading —
-    exhibits and cover pages genuinely have none.
+
+def _item_order(match: re.Match) -> tuple[int, str]:
+    """Where an item number falls in the list: 1 < 1A < 1B < 2."""
+    number, suffix = _ITEM_NUMBER.match(match.group(2).strip()).groups()
+    return int(number), suffix.upper()
+
+
+def _survivors(block: list[re.Match]) -> list[re.Match]:
+    """The headings a block of contents rows should not have swallowed.
+
+    A block is only a table of contents once `_CONTENTS_RUN` rows have run
+    together; anything shorter is left alone. Within one, the last restart of
+    the numbering is either the next Part of the same contents or the first
+    real heading of the body, and the two are told apart by what follows: a
+    Part continues for several more rows, a body heading does not.
     """
-    last = None
-    for match in _SECTION_RE.finditer(text, 0, max(0, offset)):
-        last = _heading(match)[1]
-    return last
+    if len(block) < _CONTENTS_RUN:
+        return block
+    restart = 0
+    for i in range(1, len(block)):
+        if _item_order(block[i]) <= _item_order(block[i - 1]):
+            restart = i
+    tail = block[restart:]
+    return tail if restart and len(tail) < _CONTENTS_RUN else []
+
+
+def _drop_contents(text: str, matches: list[re.Match]) -> list[re.Match]:
+    """Discard the table of contents from a document's headings."""
+    kept: list[re.Match] = []
+    block: list[re.Match] = []
+    for match in matches:
+        if _is_listing(text, match):
+            block.append(match)
+            continue
+        kept.extend(_survivors(block))
+        block.clear()
+        kept.append(match)
+    kept.extend(_survivors(block))
+    return kept
 
 
 def section_index(text: str) -> list[tuple[int, str]]:
     """Every "Item N." heading and where it starts, in one pass.
 
-    `section_of` rescans from the beginning for each call, which is fine for a
-    single lookup and quadratic when labelling every line of a filing. Building
-    the index once and searching it turns indexing a 2,000-line document from
+    Looking a heading up per line would rescan the document each time, which is
+    fine once and quadratic when labelling every line of a filing. Building the
+    index once and searching it turns indexing a 2,000-line document from
     minutes into milliseconds.
     """
-    return [(m.start(), _heading(m)[1]) for m in _SECTION_RE.finditer(text)]
+    matches = _drop_contents(text, list(_SECTION_RE.finditer(text)))
+    return [(m.start(), _heading(m)[1]) for m in matches]
+
+
+def section_of(text: str, offset: int) -> str | None:
+    """The nearest preceding "Item N." heading, which is how filings are cited.
+
+    Returns None rather than a guess when the match sits before any heading —
+    exhibits and cover pages genuinely have none. The whole document is scanned
+    even for an early offset, because the contents block that has to be
+    discarded is only recognisable as a run.
+    """
+    return section_at(section_index(text), offset)
 
 
 def section_at(index: list[tuple[int, str]], offset: int) -> str | None:
