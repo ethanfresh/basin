@@ -5,7 +5,13 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Local data — regenerable from SEC APIs, never committed
-data/
+# Local data — regenerable from SEC APIs, never committed. data/ is
+# typically a symlink to a store kept outside the checkout; see docs/deploy.md.
+# No trailing slash: a symlink is a file, and `data/` would only match a real
+# directory, leaving the link itself showing up as untracked.
+/data
+
+# Deployment artifacts built from it
+build/
 *.db
 *.sqlite3

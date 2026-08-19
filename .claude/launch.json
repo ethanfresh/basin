@@ -6,7 +6,10 @@
       "runtimeExecutable": "/Users/ethanfreshman/Desktop/basin/.venv/bin/python",
       "runtimeArgs": ["-m", "basin.web"],
       "port": 8422,
-      "autoPort": true
+      "autoPort": true,
+      "env": {
+        "PYTHONPATH": "src"
+      }
     }
   ]
 }
