@@ -1,6 +1,6 @@
 # Basin
 
-**A consolidated E&P database for US oil & gas producers, built from SEC filings, with a citation behind every number.**
+**A consolidated E&P database of US oil & gas producers, built from SEC filings, with a citation behind every number.**
 
 The operating data for exploration & production companies exists, publicly and for free, and it is unusable in the form it is published in. Reserves, production, realized prices, per-barrel costs and capex are scattered across hundreds of pages of prose, tables and inconsistently-tagged XBRL, in 91 separate filers' documents, restated and relabelled from year to year.
 
