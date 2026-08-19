@@ -27,21 +27,30 @@ CREATE TABLE IF NOT EXISTS company (
     -- a driller. Putting them in one table would assert a comparability that
     -- does not exist, which is the specific failure this product cannot afford.
     --
-    -- Sourced from Finviz's industry classification rather than from SIC, which
-    -- is too noisy to assign on: SIC 1311 sweeps in midstream, refiners,
-    -- royalty trusts and -- observed in the population -- a biotechnology
-    -- company. Recorded with its source and date because the assignment can
-    -- change: companies divest midstream assets and E&Ps convert to minerals
-    -- vehicles, and a cohort move has to be visible rather than silent.
-    cohort        TEXT,                      -- 'Oil & Gas E&P', 'Uranium', ...
-    cohort_source TEXT,                      -- 'finviz'
+    -- Sourced from the SEC's own SIC classification, which is free, public and
+    -- enumerable in reverse -- every filer under a code. SIC is noisy on its
+    -- own: 1311 sweeps in midstream, refiners, shells and -- observed in the
+    -- population -- a biotechnology company. It is therefore a proposal, not a
+    -- verdict. Membership additionally requires a `producer_check` row saying a
+    -- filing was read and reserves were found, and a handful of filers whose
+    -- code is stale carry an explicit override in basin.cohorts.
+    --
+    -- Recorded with its source and date because the assignment can change:
+    -- companies divest midstream assets and E&Ps convert to minerals vehicles,
+    -- and a cohort move has to be visible rather than silent.
+    cohort        TEXT,                      -- 'Oil & Gas E&P', 'Oil & Gas Integrated'
+    cohort_source TEXT,                      -- 'sic' | 'sic-override'
     cohort_as_of  TEXT,                      -- ISO-8601 date of the pull
 
     -- Domicile, not listing venue. A US-listed filer domiciled abroad files
     -- 20-F or 40-F under IFRS rather than 10-K under US GAAP, so this predicts
     -- whether the Facts layer can reach it at all.
     country       TEXT,
-    market_cap_musd REAL,                    -- millions USD, as Finviz exports
+
+    -- Left over from the Finviz-sourced cohort, which exported it. EDGAR
+    -- publishes no market capitalisation, so nothing populates this now;
+    -- existing values are preserved rather than overwritten with nulls.
+    market_cap_musd REAL,                    -- millions USD
 
     -- Two independent axes, both measured rather than inferred from domicile.
     --
@@ -334,10 +343,12 @@ HAVING COUNT(DISTINCT unit) > 1;
 
 -- Whether a cohort member actually produces hydrocarbons.
 --
--- Cohort comes from Finviz, which misclassifies: TGS is an Argentine gas
--- pipeline sitting in Oil & Gas Integrated. A non-producer in a producing
--- cohort renders as a blank row in a reserves panel, which reads as a filer
--- that failed to tag something rather than one with nothing to report.
+-- This is what closes cohort membership. SIC proposes a candidate and this
+-- table disposes: SIC 1311 holds shells, midstream partnerships and refiners
+-- alongside operators, and TGS -- an Argentine gas pipeline -- registers under
+-- an oil & gas code. A non-producer in a producing cohort renders as a blank
+-- row in a reserves panel, which reads as a filer that failed to tag something
+-- rather than one with nothing to report.
 --
 -- A verdict, not a fact about a filing, so it is replaced on re-run rather than
 -- appended. 'unknown' is distinct from 'non-producer' on purpose: the first
@@ -444,10 +455,16 @@ CREATE TABLE IF NOT EXISTS alias_validation (
     taxonomy         TEXT,
     tag              TEXT,
     unit             TEXT,
-    status           TEXT NOT NULL,      -- validated | incoherent | insufficient
+    status           TEXT NOT NULL,      -- validated | drifted | incoherent | insufficient
     coherent_periods INTEGER NOT NULL DEFAULT 0,
     tested_periods   INTEGER NOT NULL DEFAULT 0,
     median_error     REAL,
+
+    -- The periods where the chosen tags failed their own arithmetic, and whose
+    -- rows are therefore not written. Recorded because a suppressed cell has
+    -- to be explicable: "Continental has no FY2025 proved total" is a question
+    -- someone will ask, and the answer is here rather than in a log.
+    incoherent_periods TEXT,               -- comma-separated ISO dates
     note             TEXT,
     checked_at       TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (cik, family, concept_key)

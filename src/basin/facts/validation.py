@@ -15,6 +15,16 @@ uses, try the combinations, and keep the one whose numbers agree.
 
 Where no combination agrees, this reports that rather than picking a winner.
 A silently wrong total is worse than an absent one.
+
+The identity is tested per period, and the answer is kept per period. A tag can
+mean one thing for a decade and something else afterwards -- Continental's
+``ProvedUndevelopedReserveBOE1`` carries the undeveloped figure through FY2017
+and the *total* from FY2018 on, with ``ProvedDevelopedAndUndevelopedReserveNet-
+Energy`` carrying undeveloped in exchange. No single combination is right for
+its whole history, so choosing one and applying it everywhere writes the swap
+into five years of cells. ``coherent_period_ends`` is what the ingest filters
+on, so the periods where the chosen combination fails its own arithmetic are
+not written at all.
 """
 
 from __future__ import annotations
@@ -71,6 +81,29 @@ class FamilyValidation:
     coherent_periods: int = 0
     median_error: float | None = None
     note: str = ""
+    coherent_period_ends: frozenset[str] = frozenset()
+    """Periods where developed + undeveloped = total actually held.
+
+    Empty when nothing was testable, which is not the same as nothing holding
+    -- see ``status``. A caller filtering on this must check ``testable``
+    first, or an untested filer loses every reserve row it has.
+    """
+
+    incoherent_period_ends: frozenset[str] = frozenset()
+    """Periods that were tested and failed. These are the cells to suppress."""
+
+    @property
+    def testable(self) -> bool:
+        """Whether the identity could be evaluated at all for this filer."""
+        return self.tested_periods > 0
+
+    def holds_for(self, period_end: str) -> bool:
+        """Whether this filer's reserve family can be trusted for one period.
+
+        A period that was never tested passes: two of the three concepts
+        untagged is a coverage gap, not evidence of a wrong number.
+        """
+        return period_end not in self.incoherent_period_ends
 
     @property
     def overrides(self) -> dict[str, tuple[str, str]]:
@@ -125,32 +158,50 @@ def candidates_for(
     return out
 
 
-def _score(
-    dev: Candidate, undev: Candidate, total: Candidate
-) -> tuple[int, int, float | None, bool]:
-    """(coherent periods, tested periods, median error, latest is coherent).
+@dataclass(frozen=True)
+class Score:
+    """How one alias combination fares against the identity, period by period."""
 
-    Whether the *latest* period holds is tracked separately from how many
-    periods hold. A tag can mean one thing for a decade and something else
-    afterwards, and a panel showing FY2025 is not helped by agreement in
-    FY2012 -- so the two facts are reported rather than averaged together.
-    """
+    coherent: frozenset[str]
+    incoherent: frozenset[str]
+    median_error: float | None
+
+    @property
+    def tested(self) -> int:
+        return len(self.coherent) + len(self.incoherent)
+
+    @property
+    def latest_ok(self) -> bool:
+        """Whether the most recent tested period holds.
+
+        Tracked separately from how many periods hold: a tag can mean one thing
+        for a decade and something else afterwards, and a panel showing FY2025
+        is not helped by agreement in FY2012.
+        """
+        if not self.tested:
+            return False
+        return max(self.coherent | self.incoherent) in self.coherent
+
+
+def _score(dev: Candidate, undev: Candidate, total: Candidate) -> Score:
+    """Test developed + undeveloped = total in every period all three cover."""
     periods = sorted(set(dev.values) & set(undev.values) & set(total.values))
     errors: list[float] = []
-    coherent = 0
-    latest_ok = False
+    coherent: set[str] = set()
+    incoherent: set[str] = set()
     for p in periods:
         t = total.values[p]
         if t == 0:
+            # Nothing to divide by, so nothing measured. Not a failure.
             continue
         err = abs(dev.values[p] + undev.values[p] - t) / abs(t)
         errors.append(err)
-        if err <= TOLERANCE:
-            coherent += 1
-            latest_ok = True
-        else:
-            latest_ok = False
-    return coherent, len(errors), (statistics.median(errors) if errors else None), latest_ok
+        (coherent if err <= TOLERANCE else incoherent).add(p)
+    return Score(
+        coherent=frozenset(coherent),
+        incoherent=frozenset(incoherent),
+        median_error=statistics.median(errors) if errors else None,
+    )
 
 
 def validate_reserve_family(
@@ -185,30 +236,32 @@ def validate_reserve_family(
     ):
         if not (dev.unit == undev.unit == total.unit):
             continue
-        coherent, tested, median_error, latest_ok = _score(dev, undev, total)
-        if tested == 0:
+        score = _score(dev, undev, total)
+        if not score.tested:
             continue
         tried += 1
         # A combination that holds in the latest period outranks one that
         # merely holds more often, because the latest period is the one the
         # panel shows. Then most coherent periods, then lowest error.
         rank = (
-            latest_ok,
-            coherent,
-            -(median_error if median_error is not None else 1e9),
-            tested,
+            score.latest_ok,
+            len(score.coherent),
+            -(score.median_error if score.median_error is not None else 1e9),
+            score.tested,
         )
         candidate = FamilyValidation(
             cik=cik,
             status=(
-                STATUS_VALIDATED if latest_ok
-                else STATUS_DRIFTED if coherent
+                STATUS_VALIDATED if score.latest_ok
+                else STATUS_DRIFTED if score.coherent
                 else STATUS_INCOHERENT
             ),
             choices={dev_key: dev, undev_key: undev, total_key: total},
-            tested_periods=tested,
-            coherent_periods=coherent,
-            median_error=median_error,
+            tested_periods=score.tested,
+            coherent_periods=len(score.coherent),
+            median_error=score.median_error,
+            coherent_period_ends=score.coherent,
+            incoherent_period_ends=score.incoherent,
         )
         if best is None or rank > best[0]:
             best = (rank, candidate)
@@ -231,10 +284,14 @@ def validate_reserve_family(
             tested_periods=result.tested_periods,
             coherent_periods=result.coherent_periods,
             median_error=result.median_error,
+            coherent_period_ends=result.coherent_period_ends,
+            incoherent_period_ends=result.incoherent_period_ends,
             note=(
                 f"held for {result.coherent_periods} of {result.tested_periods} "
                 f"periods but not the most recent; the tag's meaning appears to "
-                f"have changed (median error {pct})"
+                f"have changed (median error {pct}). "
+                f"{len(result.incoherent_period_ends)} period(s) suppressed: "
+                + ", ".join(sorted(result.incoherent_period_ends))
             ),
         )
     if result.status == STATUS_INCOHERENT:
@@ -246,9 +303,11 @@ def validate_reserve_family(
             tested_periods=result.tested_periods,
             coherent_periods=0,
             median_error=result.median_error,
+            coherent_period_ends=frozenset(),
+            incoherent_period_ends=result.incoherent_period_ends,
             note=(
                 f"no combination of {tried} satisfies developed + undeveloped = "
-                f"total; best median error {pct}"
+                f"total; best median error {pct}. Every tested period suppressed"
             ),
         )
     return result

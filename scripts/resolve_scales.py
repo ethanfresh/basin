@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         for r in conn.execute(
             """
             SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
-                   f.product,
+                   f.product, f.extracted_by,
                    -- A figure read off the printed table is printed at the
                    -- scale it is stored at: the row IS the page. There is no
                    -- divisor to infer, so it is declared rather than searched
@@ -67,11 +67,50 @@ def main(argv: list[str] | None = None) -> int:
         )
     ]
 
+    counts: collections.Counter = collections.Counter()
+
+    # Figures read off the printed table do not go through the inference at
+    # all, and that is the whole point of reading them there.
+    #
+    # This resolver exists because a tagged value leaves two questions open:
+    # what divisor the page applied, and which unit the filer meant. A table
+    # reading answers both on the page — the divisor is 1 because the figure
+    # IS what is printed, and the unit is the column header standing over it.
+    # Putting such a row through the value-per-barrel test would let an
+    # economic plausibility band overrule a fact that was read rather than
+    # inferred, and would leave the cell blank whenever the filer happens not
+    # to tag a standardized measure to test it against.
+    table_rows = [r for r in rows if r["extracted_by"] == "table:reserves"]
+    for row in table_rows:
+        conversion = conversion_for(row["unit"])
+        if conversion is None or conversion.canonical == "USD":
+            counts["table: no canonical form for the unit"] += 1
+            continue
+        canonical = row["value"] * conversion.factor
+        # The one check that still applies: nothing in this cohort holds 1e11
+        # BOE. Past that the column header was misread, however clearly it
+        # seemed to read.
+        if abs(canonical) > 1e11:
+            counts["table: implausible magnitude, cleared"] += 1
+            clear_scale(conn, row["id"])
+            continue
+        record_scale(
+            conn,
+            row["id"],
+            1.0,
+            canonical,
+            conversion.canonical,
+            "read from the reserve table; unit from the column header",
+            conversion_note=conversion.note or None,
+        )
+        counts["table: resolved from the printed unit"] += 1
+
     by_period: dict[tuple[str, str], list[dict]] = collections.defaultdict(list)
     for row in rows:
+        if row["extracted_by"] == "table:reserves":
+            continue
         by_period[(row["cik"], row["period_end"])].append(row)
 
-    counts: collections.Counter = collections.Counter()
     for (cik, period), group in by_period.items():
         measure = next(
             (r for r in group if r["concept_key"] == "standardized_measure"), None

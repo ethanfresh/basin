@@ -238,9 +238,10 @@ def insert_facts(conn: sqlite3.Connection, rows: Iterable[FactRow]) -> int:
             INSERT INTO fact (
                 cik, concept_key, value, unit, product, unit_rank,
                 period_start, period_end, fiscal_year, fiscal_period,
-                accession, form, extracted_by, taxonomy, tag
+                accession, form, extracted_by, taxonomy, tag,
+                source_span, section, is_hedged
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -259,6 +260,9 @@ def insert_facts(conn: sqlite3.Connection, rows: Iterable[FactRow]) -> int:
                 row.extracted_by,
                 row.taxonomy,
                 row.tag,
+                row.source_span,
+                row.section,
+                None if row.is_hedged is None else int(row.is_hedged),
             ),
         )
         written += cursor.rowcount if cursor.rowcount > 0 else 0
@@ -302,7 +306,9 @@ def record_alias_validation(
             (
                 validation.cik, family, key, choice.taxonomy, choice.tag, choice.unit,
                 validation.status, validation.coherent_periods,
-                validation.tested_periods, validation.median_error, validation.note,
+                validation.tested_periods, validation.median_error,
+                ",".join(sorted(validation.incoherent_period_ends)) or None,
+                validation.note,
             )
             for key, choice in validation.choices.items()
         ]
@@ -310,20 +316,23 @@ def record_alias_validation(
         rows = [
             (
                 validation.cik, family, "*", None, None, None,
-                validation.status, 0, 0, None, validation.note,
+                validation.status, 0, 0, None, None, validation.note,
             )
         ]
     conn.executemany(
         """
         INSERT INTO alias_validation
             (cik, family, concept_key, taxonomy, tag, unit, status,
-             coherent_periods, tested_periods, median_error, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             coherent_periods, tested_periods, median_error,
+             incoherent_periods, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(cik, family, concept_key) DO UPDATE SET
             taxonomy = excluded.taxonomy, tag = excluded.tag, unit = excluded.unit,
             status = excluded.status, coherent_periods = excluded.coherent_periods,
             tested_periods = excluded.tested_periods,
-            median_error = excluded.median_error, note = excluded.note,
+            median_error = excluded.median_error,
+            incoherent_periods = excluded.incoherent_periods,
+            note = excluded.note,
             checked_at = datetime('now')
         """,
         rows,

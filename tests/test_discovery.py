@@ -40,20 +40,63 @@ def _submissions(**overrides) -> dict:
 
 
 class TestProfileParsing:
-    def test_reads_latest_10k_not_merely_the_first_listed(self):
+    def test_reads_latest_annual_not_merely_the_first_listed(self):
         p = profile_from_submissions(_submissions())
-        assert p.latest_10k_date == "2026-02-20"
-        assert p.latest_10k_accession == "0001090012-26-000010"
-        assert p.tenk_count == 2
+        assert p.latest_annual_date == "2026-02-20"
+        assert p.latest_annual_accession == "0001090012-26-000010"
+        assert p.latest_annual_form == "10-K"
+        assert p.annual_count == 2
 
     def test_counts_8ks_separately(self):
         p = profile_from_submissions(_submissions())
         assert p.eightk_count == 2
         assert p.latest_8k_date == "2026-02-19"
 
-    def test_10q_is_not_counted_as_a_10k(self):
+    def test_10q_is_not_counted_as_an_annual_report(self):
         p = profile_from_submissions(_submissions())
-        assert p.tenk_count == 2
+        assert p.annual_count == 2
+
+    def test_20f_and_40f_count_as_annual_reports(self):
+        # A foreign private issuer never files a 10-K. Gating on 10-K alone
+        # would drop 20 of the 91 cohort members, and drop them silently.
+        p = profile_from_submissions(
+            _submissions(
+                filings={"recent": {
+                    "form": ["20-F", "6-K"],
+                    "filingDate": ["2026-03-27", "2026-05-01"],
+                    "accessionNumber": ["0001090012-26-000011", "0001090012-26-000012"],
+                }}
+            )
+        )
+        assert p.annual_count == 1
+        assert p.latest_annual_form == "20-F"
+        assert p.filed_annual_since("2025-01-01")
+
+        canadian = profile_from_submissions(
+            _submissions(
+                filings={"recent": {
+                    "form": ["40-F"],
+                    "filingDate": ["2026-02-26"],
+                    "accessionNumber": ["0001090012-26-000013"],
+                }}
+            )
+        )
+        assert canadian.latest_annual_form == "40-F"
+
+    def test_an_amendment_counts_but_a_transition_report_does_not(self):
+        # 10-K/A restates the annual report; 10-KT covers a stub period after a
+        # fiscal-year change and is not a comparable year.
+        p = profile_from_submissions(
+            _submissions(
+                filings={"recent": {
+                    "form": ["10-K/A", "10-KT"],
+                    "filingDate": ["2026-04-01", "2025-08-01"],
+                    "accessionNumber": ["0001090012-26-000014", "0001090012-25-000014"],
+                }}
+            )
+        )
+        assert p.annual_count == 1
+        assert p.latest_annual_form == "10-K"
 
     def test_null_exchange_entries_are_dropped(self):
         # EDGAR pads `exchanges` to match `tickers`, leaving nulls behind.
@@ -63,10 +106,10 @@ class TestProfileParsing:
         assert p.exchanges == ("NYSE",)
         assert p.tickers == ("TST", "TSTB")
 
-    def test_filed_10k_since(self):
+    def test_filed_annual_since(self):
         p = profile_from_submissions(_submissions())
-        assert p.filed_10k_since("2025-01-01")
-        assert not p.filed_10k_since("2027-01-01")
+        assert p.filed_annual_since("2025-01-01")
+        assert not p.filed_annual_since("2027-01-01")
 
 
 class TestDomicile:
@@ -74,6 +117,7 @@ class TestDomicile:
         # EDGAR echoes the state code as its own description for US filers.
         p = profile_from_submissions(_submissions())
         assert not p.is_foreign
+        assert p.country == "USA"
 
     def test_foreign_filer_is_detected_by_a_real_description(self):
         p = profile_from_submissions(
@@ -87,10 +131,39 @@ class TestDomicile:
             )
         )
         assert p.is_foreign
+        # Province is not a distinction anything downstream makes.
+        assert p.country == "Canada"
 
     def test_missing_address_is_not_treated_as_foreign(self):
         p = profile_from_submissions(_submissions(addresses={}))
         assert not p.is_foreign
+
+    def test_incorporation_answers_domicile_when_there_is_no_address(self):
+        # 8 of the 22 foreign-domiciled cohort members -- Petrobras, Eni,
+        # Ecopetrol among them -- carry no business address at all.
+        p = profile_from_submissions(
+            _submissions(
+                addresses={},
+                stateOfIncorporation="D5",
+                stateOfIncorporationDescription="Brazil",
+            )
+        )
+        assert p.is_foreign
+        assert p.country == "Brazil"
+
+    def test_a_us_incorporation_code_alone_does_not_assert_a_us_domicile(self):
+        # Shell plc has no business address and is incorporated "DC" in EDGAR.
+        # Falling back to that would label a UK company American, so the
+        # answer is "EDGAR does not say" rather than a guess.
+        p = profile_from_submissions(
+            _submissions(
+                addresses={},
+                stateOfIncorporation="DC",
+                stateOfIncorporationDescription="DC",
+            )
+        )
+        assert not p.is_foreign
+        assert p.country is None
 
 
 class TestIssuerDedup:

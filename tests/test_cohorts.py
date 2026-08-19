@@ -1,25 +1,36 @@
-"""Cohort assignment, and the identifier split it depends on.
+"""Cohort assignment from SIC, and the identifier split it depends on.
 
 Basin presents companies by ticker and keys them by CIK. These tests pin the
 behaviours that make that split safe -- picking one ticker out of several listed
-on a filer, refusing to widen a cohort, and preserving an assignment when a
-caller that knows nothing about cohorts writes the same company.
+on a filer, and preserving an assignment when a caller that knows nothing about
+cohorts writes the same company -- together with the SIC-to-cohort rules that
+decide membership in the first place.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from basin.cohorts import EXCLUDED, SIC_OVERRIDES, cohort_for, is_operator, producing_sic
+from basin.edgar.discovery import profile_from_submissions
 from basin.edgar.tickers import primary_ticker, ticker_map_from_payload
-from basin.finviz import FinvizError, parse_export
 from basin.store import connect, queries
 from basin.store.db import upsert_company
 
-HEADER = '"No.","Ticker","Company","Sector","Industry","Country","Market Cap"\n'
 
-
-def _csv(*rows: str) -> str:
-    return HEADER + "".join(rows)
+def _profile(**overrides):
+    payload = {
+        "cik": 1090012,
+        "name": "TEST ENERGY CORP",
+        "tickers": ["TST"],
+        "exchanges": ["NYSE"],
+        "sic": "1311",
+        "sicDescription": "Crude Petroleum & Natural Gas",
+        "addresses": {"business": {"stateOrCountry": "TX", "stateOrCountryDescription": "TX"}},
+        "filings": {"recent": {"form": [], "filingDate": [], "accessionNumber": []}},
+    }
+    payload.update(overrides)
+    return profile_from_submissions(payload)
 
 
 class TestPrimaryTicker:
@@ -64,33 +75,73 @@ class TestTickerMap:
         assert ticker_map_from_payload({}).primary("0000732834") is None
 
 
-class TestParseExport:
-    def test_reads_a_screener_row(self):
-        rows = parse_export(_csv('1,"APA","APA Corp","Energy","Oil & Gas E&P","USA",15548.60\n'))
-        assert rows[0].ticker == "APA"
-        assert rows[0].industry == "Oil & Gas E&P"
-        assert rows[0].market_cap == pytest.approx(15548.60)
-        assert rows[0].is_usa
+class TestSicCohorts:
+    def test_crude_petroleum_is_the_ep_cohort(self):
+        assert cohort_for(_profile()) == ("Oil & Gas E&P", "sic")
 
-    def test_foreign_domicile_is_flagged(self):
-        # A US-listed filer domiciled abroad files 20-F/40-F under IFRS, which
-        # the Facts layer cannot read -- so domicile predicts reachability.
-        rows = parse_export(_csv('1,"SHEL","Shell plc","Energy","Oil & Gas Integrated","United Kingdom",0\n'))
-        assert not rows[0].is_usa
+    def test_petroleum_refining_is_the_integrated_cohort(self):
+        # The majors register as refiners. XOM, CVX, BP, SU and IMO are all
+        # SIC 2911; none of them is a pure refiner.
+        p = _profile(cik=93410, sic="2911", sicDescription="Petroleum Refining")
+        assert cohort_for(p) == ("Oil & Gas Integrated", "sic")
 
-    def test_rejects_a_slug_that_returns_the_wrong_industry(self):
-        # A filter slug that silently widened would contaminate a cohort with
-        # companies whose metrics do not apply, which is the one failure the
-        # cohort split exists to prevent.
-        with pytest.raises(FinvizError, match="filter slug has changed meaning"):
-            parse_export(
-                _csv('1,"APA","APA Corp","Energy","Oil & Gas E&P","USA",15548.60\n'),
-                expected_industry="Uranium",
-            )
+    def test_royalty_traders_join_ep_but_are_not_operators(self):
+        # 6792 is EDGAR's own code for royalty trusts. They publish full
+        # reserve tables, so they are real E&P comparables -- but they lift
+        # nothing, so a blank lifting cost is the business model, not a gap.
+        p = _profile(cik=319655, name="SAN JUAN BASIN ROYALTY TRUST",
+                     sic="6792", sicDescription="Oil Royalty Traders")
+        assert cohort_for(p) == ("Oil & Gas E&P", "sic")
+        assert not is_operator(p)
 
-    def test_missing_market_cap_is_none_not_zero(self):
-        rows = parse_export(_csv('1,"XYZ","Xyz","Energy","Oil & Gas E&P","USA",-\n'))
-        assert rows[0].market_cap is None
+    def test_a_royalty_vehicle_filed_under_1311_is_caught_by_name(self):
+        # EDGAR is inconsistent: Black Stone Minerals and Dorchester Minerals
+        # are 1311, not 6792, so the name hint is still load-bearing.
+        assert not is_operator(_profile(name="BLACK STONE MINERALS, L.P."))
+        assert is_operator(_profile(name="DIAMONDBACK ENERGY, INC."))
+
+    def test_a_non_producing_code_yields_no_cohort_and_says_why(self):
+        # Midstream gathers third-party volumes under fee contracts: throughput,
+        # not reserves. It must not land in a reserves panel.
+        cohort, why = cohort_for(
+            _profile(sic="4922", sicDescription="Natural Gas Transmission")
+        )
+        assert cohort is None
+        assert "holds no reserves" in why
+
+    def test_an_unrelated_code_yields_no_cohort(self):
+        cohort, why = cohort_for(
+            _profile(sic="2836", sicDescription="Biological Products")
+        )
+        assert cohort is None
+        assert "2836" in why
+
+    def test_a_stale_code_is_overridden_and_the_source_says_so(self):
+        # ConocoPhillips is still coded 2911 Petroleum Refining, which it has
+        # not been since it spun off Phillips 66 in 2012. Recording the source
+        # as 'sic-override' is what keeps the deviation visible in the store.
+        p = _profile(cik=1163165, name="CONOCOPHILLIPS", sic="2911",
+                     sicDescription="Petroleum Refining")
+        assert cohort_for(p) == ("Oil & Gas E&P", "sic-override")
+
+    def test_every_override_targets_a_cohort_that_exists(self):
+        cohorts = {"Oil & Gas E&P", "Oil & Gas Integrated"}
+        for cik, (cohort, reason) in SIC_OVERRIDES.items():
+            assert cohort in cohorts, cik
+            # An override is a deviation from the SEC's own classification, so
+            # it does not exist without a reason attached.
+            assert len(reason) > 40, cik
+
+    def test_overrides_and_exclusions_are_keyed_by_padded_cik(self):
+        # Basin keys on CIK, and an unpadded key would silently never match.
+        for cik in list(SIC_OVERRIDES) + list(EXCLUDED):
+            assert len(cik) == 10 and cik.isdigit(), cik
+
+    def test_no_filer_is_both_overridden_and_excluded(self):
+        assert not set(SIC_OVERRIDES) & set(EXCLUDED)
+
+    def test_producing_codes_are_the_ones_the_map_knows(self):
+        assert producing_sic() == ("1311", "2911", "6792")
 
 
 class TestCohortPersistence:
@@ -104,7 +155,7 @@ class TestCohortPersistence:
         with conn:
             upsert_company(
                 conn, "0000797468", "OCCIDENTAL PETROLEUM CORP", ticker="OXY",
-                cohort="Oil & Gas E&P", cohort_source="finviz",
+                cohort="Oil & Gas E&P", cohort_source="sic",
                 cohort_as_of="2026-08-19", country="USA", is_operator=False,
             )
             upsert_company(conn, "0000797468", "Occidental Petroleum Corporation")
