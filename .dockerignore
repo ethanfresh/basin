@@ -1,0 +1,20 @@
+# The corpus and the store are the bulk of this repo -- tens of gigabytes that
+# the image must never carry. The store arrives on the volume at /data instead,
+# and the corpus is not needed to serve at all.
+data/
+*.db
+*.sqlite3
+
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+
+# Not part of the served app: ingestion runs from a workstation, not the host.
+scripts/
+tests/
+docs/
+*.md

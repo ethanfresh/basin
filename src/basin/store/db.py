@@ -7,14 +7,20 @@ overwrite history.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from importlib import resources
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote
 
 from basin.facts.xbrl import CompanyCoverage, FactRow
 
-DEFAULT_DB_PATH = Path("data/basin.db")
+# Read at import so the scripts, which capture this as an argparse default, and
+# the web app, which uses it as a fallback, both pick up a deployment's location
+# without either being edited. A host that mounts a volume elsewhere sets
+# BASIN_DB; an explicit --store still wins over both.
+DEFAULT_DB_PATH = Path(os.environ.get("BASIN_DB") or "data/basin.db")
 
 
 def schema_sql() -> str:
@@ -45,6 +51,26 @@ def connect(path: Path | str = DEFAULT_DB_PATH, *, create: bool = True) -> sqlit
         _add_missing_columns(conn)
         conn.executescript(schema_sql())
         conn.commit()
+    return conn
+
+
+def connect_readonly(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
+    """Open the store read-only, applying no schema.
+
+    ``mode=ro`` makes "this caller cannot write" a property of the connection
+    rather than a convention, and skipping the schema keeps a reader off the
+    write path entirely -- a served copy of the store stays byte-identical to
+    the one that was shipped.
+
+    The path is percent-encoded because SQLite parses everything after ``?`` in
+    a URI as parameters, so an unescaped ``?`` in a directory name would
+    silently truncate the filename and open the wrong database.
+    """
+    conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    # The store is far larger than the row set any one request touches, so let
+    # the OS page in what is read instead of copying through SQLite's cache.
+    conn.execute("PRAGMA mmap_size = 268435456")
     return conn
 
 

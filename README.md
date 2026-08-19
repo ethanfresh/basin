@@ -8,7 +8,7 @@ Basin consolidates that into one queryable panel — companies × metrics × per
 
 It is built for people who need this data and cannot justify an enterprise terminal seat: smaller investment firms, lenders, consultants, corporate development teams, and accounting firms.
 
-> **Status: Facts layer complete and verified, with a dashboard over it.** 91 companies across two cohorts, 19,729 facts drawn from 3,679 cited filings, and **every current cell checked against the document it cites — 97% located verbatim**. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
+> **Status: Facts layer complete and verified, with a consolidated panel over it.** 91 companies across two cohorts, 19,729 facts drawn from 3,679 cited filings, and **every current cell checked against the document it cites — 97% located verbatim**. The panel is now the table the project is named for: every company against every KPI at once, not one metric at a time. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
 
 ---
 
@@ -43,7 +43,7 @@ Tools that solve this exist. They cost tens of thousands of dollars per seat per
 
 Basin narrows the problem to one industry and solves it completely for that industry.
 
-- **A consolidated panel** — every producer, every metric, every period, in one table.
+- **A consolidated panel** — every producer, every metric, every period, in one table: a row per company and product, a column per KPI.
 - **Peer comparison** — filers side by side on the same metric for the same period, or on each filer's own latest reported period.
 - **Reported history** — what any single company has ever disclosed for a metric, so a number can be read against the filer's own past as well as against its peers.
 - **"What changed" reports** — the newest filing diffed against the prior one, with material changes surfaced and explained. *(not started)*
@@ -115,7 +115,7 @@ A CIK is assigned once and never reused. A ticker is released when a company del
 
 ### Scope: traded US securities
 
-Basin covers **traded US securities**, and cohort membership comes from a screener, so a producer with no live listing is excluded automatically. That is a deliberate scope decision. What is not acceptable is the exclusion being invisible, so every filer in the store carries a `listing_status` — `listed`, `not-listed`, or `superseded` — with the date it last filed.
+Basin covers **traded US securities**, and cohort membership comes from a screener, so a producer with no live listing is excluded automatically. That is a deliberate scope decision. What is not acceptable is the exclusion being invisible, so every filer in the store carries a `listing_status` — `listed` (120), `private-filer` (8), `deregistered` (6) or `superseded` (1) — with the date it last filed and a note saying how the verdict was reached.
 
 A filer with no listing is one of two very different things, and the difference is measurable. **Form 15** certifies termination of registration — the filer telling the SEC it intends to stop reporting — but saying so is not doing so. Read Form 15 against what was filed afterwards and the group splits cleanly:
 
@@ -140,6 +140,8 @@ A filer with no listing is one of two very different things, and the difference 
 | PHX Minerals | 2025-07-03 | 2025-05-08 |
 
 Conflating the two overstated the gap at nine when it is four. The facts of all ten are already in the store — they are simply not in a cohort, and so never in a peer table.
+
+The four are also fewer than the eight filers marked `private-filer`, and for a second reason: a filer only counts as a producer being missed if it holds a reserve or production concept. Revenue and capex alone describe a company that spends money and sells something, which is how Rivulet Entertainment survived the old SIC-1311 sweep. The query tests for a reserve base rather than for any fact at all.
 
 The **Data quality** view lists the four, because a gap in the dataset belongs beside the other things the store knows are wrong with it rather than buried in a column nobody queries. Closing it means a second membership path for filers with no listing, which is not built and not currently planned.
 
@@ -215,7 +217,7 @@ Basin is a **pipeline, not an agent.** "Alert me when guidance changes" cannot b
 | Layer | Mechanism | How it is evaluated | Status |
 |---|---|---|---|
 | **Watch** | EDGAR daily index / submissions polling → filing events | liveness | not started |
-| **Facts** | XBRL `companyfacts` → typed fact rows | exact match | **done** |
+| **Facts** | XBRL `companyfacts`, plus inline XBRL read from the filings for the dimensions the API drops → typed fact rows | exact match | **done** |
 | **Verification** | Every stored value located in the document it cites | % found, per concept | **done** |
 | **Extraction** | Per-vertical KPI schema; LLM constrained to schema; mandatory source span | labeled golden set, per-field P/R | not started |
 | **Derivation** | Pure Python — growth, ratios, unit normalization | unit tests | not started |
@@ -264,7 +266,7 @@ Putting ninety companies in one table asserts that the rows are comparable. Freq
 
 The first live instances turned up in the Facts layer, before any language model was involved:
 
-- **Products collide inside one concept.** XBRL dimensions reserves and realized price by product, but the `companyfacts` API flattens the dimension away. Matador's oil and gas prices arrived as two values on one concept, distinguishable only by unit. Product is therefore part of a cell's identity — oil and gas are separate rows, not competitors for one cell.
+- **Products collide inside one concept.** XBRL dimensions reserves and realized price by product, but the `companyfacts` API flattens the dimension away. Matador's oil and gas prices arrived as two values on one concept, distinguishable only by unit. Product is therefore part of a cell's identity — oil and gas are separate rows, not competitors for one cell. Recovering the product from the unit only works where the unit is unambiguous, so the dimension is read where it survives: the filings themselves are inline XBRL and keep it. **5,408 of the 19,729 facts come from that second path** (`extracted_by = xbrl:inline`) against 14,321 from `companyfacts`, and only *dimensioned* facts are written from it — the undimensioned roll-up is already in the store, and re-inserting it would put two rows on one cell.
 
 - **A filer's own unit label can be wrong.** Devon tags total proved reserves as `MMBoe` through FY2022 and `MMcfe` from FY2023, while the values run continuously (2182 → 1817 → 2155). A genuine BOE-to-cfe change would move the figure roughly sixfold; their *developed* reserves stay in `MMBoe` at comparable magnitude in the same filings.
 
@@ -282,11 +284,17 @@ Basin does not rewrite a filer's unit — inventing a corrected label is worse t
 
 **Resolving a magnitude takes two steps, and they are different in kind.** The scale the filing prints a figure at is *measured*, by finding the value in the document. That leaves two candidate readings — as tagged, and as printed — and choosing between them is *inference*. Verified scale alone cannot decide it: Diamondback and CNX both verify at a scale of 1,000, and the correct reading is the opposite one in each case.
 
-What decides it is an economic identity. The standardized measure is a discounted present value of the same reserves, in dollars, so one divided by the other is a value per barrel — and that number has a range no real producer falls outside. Diamondback reads $10.20/BOE descaled against $0.01 as tagged; CNX reads $3.15/BOE as tagged against $3,146 descaled. The monetary side anchors it, because XBRL monetary facts are reliably tagged in dollars while volume unit labels are not.
+What decides it is an economic identity. The standardized measure is a discounted present value of the same reserves, in dollars, so one divided by the other is a value per barrel — and that number has a range no real producer falls outside. Diamondback reads $11.20/BOE descaled against $0.01 as tagged; CNX reads $3.15/BOE as tagged against $3,146 descaled. The monetary side anchors it, because XBRL monetary facts are reliably tagged in dollars while volume unit labels are not.
 
-**The unit family comes from the document too.** Scale resolution alone trusts the tagged unit, and that label is sometimes wrong in a way no scale arithmetic can see — Gulfport tags total proved reserves in `bbl` under a table headed `Total (Bcfe)`. Units are read from the filing at verification time, both inline and from column headers, and each becomes a candidate reading. Read as barrels Gulfport implies $0.80/BOE, which clears a wide sanity check and is still not a number a producer reports; read as Bcfe it implies $4.80. Readings inside the typical $1.50–$50 range win first, then readings the document states over the one the filer tagged.
+**The unit family comes from the document too.** Scale resolution alone trusts the tagged unit, and that label is sometimes wrong in a way no scale arithmetic can see — Gulfport tags total proved reserves in `bbl` under a table headed `Total (Bcfe)`. Units are read from the filing at verification time, both inline and from column headers, and each becomes a candidate reading. Read as barrels Gulfport implies $0.80/BOE, which clears a wide sanity check and is still not a number a producer reports; read as Bcfe it implies $4.80.
 
-Gulfport drops from 4.25 billion BOE to **708.8 million**, and Devon's `MMcfe` mislabel resolves to **2,428 MMBoe at $7.73/BOE**, settled by evidence from the document rather than by assumption. Every resolution records the ratio it turned on and the readings it rejected; a cell whose candidates are all implausible stays unresolved rather than guessed at. **2,601 cells are resolved.**
+Candidates are ranked in three steps: readings inside the typical **$1.50–$50** band win first; among those, the one closest to the middle of the band on a log scale, because candidates differ by orders of magnitude rather than percentages; and only then the reading the document states over the one the filer tagged. **The document used to outrank closeness, and that was wrong.** A table header is evidence about the unit, not proof of it — it is read from whichever table the value was located in, and a filing has many tables. W&T tags gas reserves as `423,300,000,000 ft3` — 423.3 Bcf, correct — under a header reading `MMBoe`. Both readings clear the band, but the tagged one implies $9.23/BOE and the header one $1.54, at the very edge. Ranking the document first took the edge reading and multiplied the reserve base sixfold. Nothing that needs the header loses by the reordering: Gulfport has only one reading inside the typical band at all, so it is settled before the tie-break is consulted.
+
+**Scale and unit are shared to different extents, and conflating them was a bug.** One decision per company and period governs the reserve table, because "in thousands" at the top of a page applies to every line under it — so the resolved *divisor* carries to every reserve row in that period. The *unit* does not: a filer reporting by product prints oil in MBbls, gas in MMcf and the total in MBoe in the same table. Forcing the anchor's unit onto every row read W&T's 423.3 Bcf of gas as 423.3 billion million BOE — 4.2e17, more than world reserves — and made 93.5 billion BOE out of Viper's 93.5 million barrels of oil. The resolved unit is now applied only where the row declared the same unit as the anchor; a row declaring something else is read as tagged. Every reserve row then takes the value-per-barrel test on its own, not just the anchor, because a filer can mislabel a product line while the line the anchor came from is right — Range's 2019 oil is `74,532` tagged MMBbls in a table printed in MBbls, 74.5 billion barrels instead of 74.5 million, a fault no shared scale can see.
+
+**Rejection has to be able to undo.** A resolver that merely declines to write leaves whatever an earlier, worse run wrote — which is how W&T's 4.2e17 survived the plausibility guard added to catch exactly it. Rejecting a reading now clears any magnitude already stored for that fact.
+
+Gulfport drops from 4.25 billion BOE to **708.8 million**, and Devon's `MMcfe` mislabel resolves to **2,428 MMBoe at $7.73/BOE**, settled by evidence from the document rather than by assumption. Every resolution records the ratio it turned on and the readings it rejected; a cell whose candidates are all implausible stays unresolved rather than guessed at. **1,991 cells are resolved** — down from 2,601 before the per-product and undo fixes, because several hundred were resolved wrongly and are now honestly blank.
 
 This is the sharpest form of the comparability problem so far, and it lands in the Facts layer — the one that was supposed to be the easy, exact one. XBRL removes the risk of a *fabricated* number; it does not deliver a *comparable* one.
 
@@ -330,17 +338,27 @@ python scripts/sync_tickers.py --apply      # canonical tickers from the SEC
 python scripts/resolve_succession.py --apply  # follow changes of registrant
 python scripts/sync_taxonomy.py --apply     # reporting taxonomy + disclosure regime
 python scripts/check_producers.py --apply   # does this filer own reserves?
+python scripts/note_untraded.py --apply     # listed / private-filer / deregistered
 
 # Facts
 python scripts/ingest_xbrl.py --cik 1090012 --forms all
+python scripts/validate_aliases.py          # which tag this filer means, per concept
+
+# Documents, then everything that reads them
 python scripts/fetch_filings.py             # documents, including 40-F exhibits
+python scripts/index_documents.py           # flatten the corpus to pages and lines
+python scripts/ingest_product_volumes.py    # the oil/gas/NGL split, from inline XBRL
 python scripts/verify_facts.py --limit 9000 --since 2000-01-01
 python scripts/resolve_scales.py            # canonical magnitudes in BOE / USD
 
 pytest
 ```
 
-Every script reports before it writes; `--apply` is always required to change the store.
+**`--apply` guards revision, not writing.** The six scripts that carry it — `sync_cohorts`, `sync_tickers`, `resolve_succession`, `sync_taxonomy`, `check_producers`, `note_untraded` — all *change* what the store already says about a company, so they report the change first and require the flag to make it. The ingest, verification and resolution scripts append or recompute rather than revise, and write on run. Of those, `index_documents`, `ingest_product_volumes`, `validate_aliases` and `resolve_scales` fetch nothing at all — their input is the corpus and cache already on disk, so they are re-run whenever the parser or the resolver improves.
+
+Two ordering constraints are real rather than stylistic, and both run through the corpus on disk rather than through the database. `fetch_filings.py` has to precede `ingest_product_volumes.py`, which reads inline XBRL out of the stored filings and skips any accession it does not find. And `verify_facts.py` has to precede `resolve_scales.py`, which decides magnitudes from the printed scale and the header units that verification recorded.
+
+`index_documents.py` is deliberately outside that chain. Verification reads the corpus files directly and fetches what is missing on demand, so it does not wait on the index; the `document` / `document_line` tables and the full-text index exist ahead of the extraction layer, which is what will read them.
 
 ### The dashboard
 
@@ -351,11 +369,13 @@ python -m uvicorn basin.web.app:app --port 8422
 
 Five views over the store at `http://localhost:8422`:
 
-- **Panel** — one metric, every company in a cohort. Defaults to each filer's own **latest reported** period, because 7 cohort members close their fiscal year outside December and a fixed period drops them entirely; every row states the period it came from and flags how far behind the panel it is. Rows are grouped by declared unit, ranked by each company's largest value with a company's rows kept together, and badged with IFRS and NI 51-101 where those apply. Each row shows which of the nine KPIs that filer reports; clicking one switches the metric. Clicking a company opens its **reported history** — small multiples, one series per product and unit, with a normalize toggle.
+- **Panel** — the consolidated table itself: **one row per company and product, one column per KPI.** There is no metric picker, because a database whose objective is consolidation should not make reading a filer's reserves against its production and its capex take three selections and three screens. Rows are keyed by `(company, product)` rather than by company, since a filer legitimately holds several values for one concept and collapsing them would either drop data or invent a total the filer never reported. Defaults to each filer's own **latest reported** period, because 7 cohort members close their fiscal year outside December and a fixed period drops them entirely. Units live in the cells, not the headers — all nine columns span more than one declared unit, and proved reserves alone arrives in fourteen — so **a column is only sortable where its values share a scale**: with Normalize on, from the resolved magnitude, and as filed only where every filer chose the same unit. The header says which columns can be ranked and which cannot, rather than sorting a lie on request. An absent cell and a cell whose magnitude could not be resolved render differently, because they are different findings. Rows are badged with IFRS and NI 51-101 where those apply; clicking a value opens the filing, page and line it came from; clicking a company opens its **reported history** — small multiples, one series per product and unit, with its own metric selector.
 - **Trends** — one KPI over time across companies, on canonical magnitudes, annual periods only.
-- **Coverage** — the companies × concepts matrix, distinguishing current from stale from never-tagged. The blank space is the extraction layer's mandate, drawn to scale.
+- **Coverage** — the companies × concepts matrix, distinguishing current from stale from never-tagged. The blank space is the extraction layer's mandate, drawn to scale — which is exactly why this view is cohort-scoped. Drawn over every company the store ever ingested it disagreed with the panel by 44 companies, and the blanks belonging to SIC-1311 residue and to filers since acquired are not work to be done. The store-wide counts live here too, above the grid, because this is the view about what the dataset does and does not hold; they take the selected cohort, and the caption says which population is on screen.
 - **Companies** — cohort members by how much data each actually has.
-- **Data quality** — reserve arithmetic that does not close, unit discontinuities, and fallback tags. Nothing here is silently corrected.
+- **Data quality** — reserve arithmetic that does not close, unit discontinuities, fallback tags, and the four producers this scope cannot reach. Nothing here is silently corrected.
+
+Cohort is **one selection shared across views**, not a control per view. Panel and Coverage answering "which companies" differently is the discrepancy the filter exists to remove, and two independent pickers would reintroduce it a click later.
 
 The app opens the store read-only, and every query lives in `basin.store.queries`, so what the browser renders and what the tests assert on are the same code.
 
@@ -368,9 +388,11 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 - [x] **The cohort, defined and defended** — 91 producers from a real industry classification, with a producer test that excluded five non-producers on recorded evidence
 - [x] **Identity** — ticker for presentation, CIK for keying, a partial unique index to enforce it, and an evidence-based resolver for changes of registrant
 - [x] **Two reporting axes** — taxonomy (can we read it) and disclosure regime (does it mean the same thing), both measured
-- [x] **A document corpus** — 4,269 documents including 8-K EX-99.1 earnings releases and 40-F exhibits, because the reserve disclosure is often not in the document the filing points at
+- [x] **A document corpus** — **4,269 documents across 3,559 of the 3,679 cited filings**, 1,267 primary and 3,002 exhibits, including 8-K EX-99.1 earnings releases and 40-F exhibits, because the reserve disclosure is often not in the document the filing points at. All of them are parsed into `document` / `document_line` and the full-text index: **13,245,443 lines**, each carrying the page and line coordinates a citation is read by. Indexing takes the corpus on disk as its input and fetches nothing, so it re-runs whenever the parser improves.
 - [x] **Document verification** — every current cell located in the filing it cites, with the matched span, page, line and printed scale. 97% of 9,502
-- [x] **A comparable panel** — resolved magnitudes with the evidence and the rejected readings recorded; unresolved cells shown unranked rather than guessed at
+- [x] **The product split, from the filings** — 5,408 dimensioned facts read from inline XBRL, recovering the oil / gas / NGL axis the `companyfacts` API drops
+- [x] **A comparable panel** — resolved magnitudes with the evidence and the rejected readings recorded; unresolved cells shown unranked rather than guessed at, and a rejection that clears what an earlier run wrote
+- [x] **The consolidated table** — one row per company and product, one column per KPI, sortable only on columns whose values share a scale
 - [x] **Page and line locators** — clicking any value opens the filing, page and line it came from
 - [x] **Reported history per company** — every past disclosure of a metric, split by product and unit so a relabelling reads as a break rather than a change
 

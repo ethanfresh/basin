@@ -1,0 +1,45 @@
+# Single machine, single volume. The store is a read-only artifact built on a
+# workstation and shipped to /data, so there is nothing here to replicate and
+# no second machine to keep in sync -- see docs/deploy.md.
+app = "basin"
+primary_region = "iad"
+
+[build]
+
+[env]
+  # Consumed by basin.store.db.DEFAULT_DB_PATH, which every script and the web
+  # app read. Not a secret: it is a path.
+  BASIN_DB = "/data/basin.db"
+  HOST = "0.0.0.0"
+  PORT = "8080"
+
+[mounts]
+  source = "basin_data"
+  destination = "/data"
+  # A swap holds the incoming store alongside the live one, so this needs room
+  # for two copies. See docs/deploy.md before resizing -- the store grows with
+  # every indexed filing.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = "stop"
+  # A volume binds this app to one machine in one region, so there is no
+  # horizontal scaling to configure here -- only whether the single machine
+  # idles down. 0 trades a cold start for not paying to sit idle.
+  min_machines_running = 0
+
+  # HEAD / reads the store not at all, which is deliberate: the health check
+  # has to pass on a freshly created volume, before the store has been
+  # uploaded, or the machine would never stay up long enough to receive it.
+  [[http_service.checks]]
+    method = "HEAD"
+    path = "/"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

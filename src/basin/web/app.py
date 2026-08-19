@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from basin.store import queries
-from basin.store.db import DEFAULT_DB_PATH
+from basin.store.db import DEFAULT_DB_PATH, connect_readonly
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -32,18 +32,21 @@ def configure(db_path: Path | str) -> None:
 def _conn() -> sqlite3.Connection:
     """Open the store read-only, per request.
 
-    SQLite connections are not shareable across threads, and the URI's
-    ``mode=ro`` makes "the dashboard cannot write to the panel" a property of
-    the connection rather than a convention.
+    SQLite connections are not shareable across threads, so this is per-request
+    rather than a module-level handle. The read-only guarantee lives in
+    :func:`basin.store.db.connect_readonly`, shared with any other reader.
+
+    The existence check is what turns a missing store into a 503 that names the
+    path, rather than the bare "unable to open database file" SQLite raises --
+    on a deploy whose volume did not mount, that distinction is the whole
+    diagnosis.
     """
     if not Path(_db_path).exists():
         raise HTTPException(
             status_code=503,
             detail=f"no fact store at {_db_path}; run scripts/ingest_xbrl.py first",
         )
-    conn = sqlite3.connect(f"file:{_db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_readonly(_db_path)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

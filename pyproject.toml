@@ -23,11 +23,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# schema.sql and web/static/ live inside the package directory, so this picks
+# them up already. They were also listed under force-include, which made a
+# non-editable `pip install .` fail outright on the duplicate path -- invisible
+# locally, where the install is editable and no wheel is ever built.
 packages = ["src/basin"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/basin/store/schema.sql" = "basin/store/schema.sql"
-"src/basin/web/static" = "basin/web/static"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
