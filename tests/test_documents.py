@@ -470,3 +470,48 @@ class TestOffsetIntegrity:
         # The preamble's text must not be findable as page content.
         assert "hidden" not in doc.text
         assert "1,234" in doc.text
+
+
+class TestUnitOverridePreference:
+    """Which reading wins when the tagged unit and a table header disagree.
+
+    A table header is evidence about the unit, not proof of it: it is read from
+    whichever table the value was located in, and a filing has many tables. So
+    it breaks ties -- it does not overrule a reading that implies a far more
+    plausible value per barrel.
+    """
+
+    def test_header_wins_when_the_tagged_unit_is_implausible(self):
+        # Gulfport: tagged bbl implies $0.80/BOE, its own table says Bcfe and
+        # implies $4.80. Only one reading is inside the typical band.
+        from basin.facts.scale import resolve
+
+        r = resolve(4_253_000_000.0, "bbl", 1e6, 3_403_000_000.0, None,
+                    header_units=("Bcfe",))
+        assert r.status == "resolved"
+        assert r.reserve_unit == "Bcfe"
+        assert r.unit_corrected
+        assert 4.0 < r.usd_per_boe < 6.0
+
+    def test_tagged_unit_wins_when_it_is_the_more_plausible_reading(self):
+        # W&T tags gas reserves as 423,300,000,000 ft3 -- 423.3 Bcf, correct --
+        # under a header reading MMBoe. Both readings clear the band, but the
+        # tagged one implies $9.23/BOE against the header's $1.54 at the edge.
+        # Ranking the document first took the edge reading and multiplied the
+        # reserve base sixfold.
+        from basin.facts.scale import resolve
+
+        r = resolve(423_300_000_000.0, "ft3", 1e9, 651_300_000.0, None,
+                    header_units=("MMBoe",))
+        assert r.status == "resolved"
+        assert r.reserve_unit == "ft3"
+        assert not r.unit_corrected
+        assert 8.0 < r.usd_per_boe < 11.0
+
+    def test_a_reading_no_producer_could_hold_is_rejected(self):
+        # 423.3e9 read as MMBoe is 4.2e17 BOE -- more than world reserves.
+        from basin.facts.scale import resolve
+
+        r = resolve(423_300_000_000.0, "ft3", 1e9, 651_300_000.0, None,
+                    header_units=("MMBoe",))
+        assert "implausible" in r.rejected

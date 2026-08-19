@@ -18,9 +18,10 @@ import argparse
 import collections
 from pathlib import Path
 
-from basin.facts.scale import STATUS_RESOLVED, resolve
+from basin.facts.scale import MAX_USD_PER_BOE, MIN_USD_PER_BOE, STATUS_RESOLVED, resolve
 from basin.facts.units import conversion_for
 from basin.store import DEFAULT_DB_PATH, connect, record_scale
+from basin.store.db import clear_scale
 
 RESERVE_CONCEPTS = (
     "proved_reserves_boe",
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         for r in conn.execute(
             """
             SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
+                   f.product,
                    v.scale_found, v.status AS verify_status, v.units_nearby,
                    v.scale_declared
             FROM fact_current f
@@ -77,23 +79,124 @@ def main(argv: list[str] | None = None) -> int:
         )
         counts[resolution.status] += 1
         if resolution.status != STATUS_RESOLVED:
+            # Clear anything an earlier run stored for this period. A period
+            # that no longer resolves must not keep showing a magnitude that a
+            # previous, worse resolver produced -- the panel would rank a value
+            # the current code refuses to stand behind.
+            for row in group:
+                clear_scale(conn, row["id"])
             continue
 
-        # One decision governs the whole reserve table for this period: the
-        # three reserve lines share a table, so they share its unit and scale.
+        # The decision governs the rows it was actually made about.
+        #
+        # It used to govern every reserve row in the period, on the reasoning
+        # that the reserve lines share a table and therefore share its unit and
+        # scale. That holds for a filer reporting one reserve table. It fails
+        # for one reporting by product: W&T's 2025 rows arrive as 6.7 MMBoe,
+        # 11.7 and 38.7 MMBbls, and 423,300,000,000 ft3 -- 423.3 Bcf of gas,
+        # correctly tagged. Forcing the anchor's MMBoe onto the ft3 row read
+        # 423.3 billion cubic feet as 423.3 billion million BOE: 4.2e17, more
+        # than world reserves.
+        #
+        # So the resolved unit is applied only where the row declared the same
+        # unit as the anchor -- where they demonstrably are the same table. A
+        # row that declared something else keeps its own unit and is read as
+        # tagged, which is the reading its own declaration supports.
+        # Scale and unit are shared to different extents, and conflating them
+        # is what broke this.
+        #
+        # The divisor is a property of the printed table -- "in thousands" at
+        # the top of a page applies to every line under it -- so it carries to
+        # every reserve row in the period. The unit does not: a filer reporting
+        # by product prints oil in MBbls, gas in MMcf and the total in MBoe in
+        # the same table. Viper's 2024 oil line is 93,563,000 MBbls, and reading
+        # it in the total's MBoe made 93.5 billion BOE out of 93.5 million.
+        #
+        # So the resolved unit applies only where the row declared the same unit
+        # as the anchor, and every reserve row takes the resolved divisor.
+        anchor_unit = anchor["unit"]
+
+        # The period's total proved reserves, in canonical units, if it has one.
+        # Taken from the row with no product dimension -- the whole reserve base
+        # rather than one of its parts.
+        period_total = None
+        total_row = next(
+            (r for r in group
+             if r["concept_key"] == "proved_reserves_boe" and not r["product"]),
+            None,
+        )
+        if total_row is not None:
+            total_conv = conversion_for(
+                resolution.reserve_unit if total_row["unit"] == anchor_unit
+                else total_row["unit"]
+            )
+            if total_conv is not None and total_conv.canonical != "USD":
+                period_total = (
+                    total_row["value"] / resolution.reserve_divisor
+                ) * total_conv.factor
+
         for row in group:
             is_measure = row["concept_key"] == "standardized_measure"
-            unit = row["unit"] if is_measure else (resolution.reserve_unit or row["unit"])
+            if is_measure:
+                unit, divisor = row["unit"], resolution.measure_divisor
+            else:
+                same_unit = row["unit"] == anchor_unit
+                unit = (resolution.reserve_unit or row["unit"]) if same_unit else row["unit"]
+                divisor = resolution.reserve_divisor
             conversion = conversion_for(unit)
             if conversion is None:
                 continue
-            divisor = resolution.measure_divisor if is_measure else resolution.reserve_divisor
             canonical = (row["value"] / divisor) * conversion.factor
             # Nothing in this cohort holds 1e11 BOE; past that the unit is
             # wrong, not the company large.
+            #
+            # Clear any magnitude already stored rather than only declining to
+            # write one. Skipping leaves a value from an earlier, worse run in
+            # place, which is how W&T's 4.2e17 survived the guard that was
+            # added to catch exactly it.
             if conversion.canonical != "USD" and abs(canonical) > 1e11:
                 counts["rejected as implausible"] += 1
+                clear_scale(conn, row["id"])
                 continue
+
+            # Every reserve row gets the value-per-barrel test, not only the
+            # anchor the period was resolved from.
+            #
+            # A filer can label its product lines wrongly while the line the
+            # anchor came from is right. Range's 2019 gas is 12,114,977 MMcf,
+            # correct, and its oil is 74,532 tagged MMBbls when the table is
+            # printed in MBbls -- 74.5 billion barrels instead of 74.5 million.
+            # Sharing the anchor's scale cannot catch that, because the fault is
+            # in the row's own unit.
+            #
+            # The band is the wide one. A single product is not expected to
+            # imply the same value per barrel as the whole reserve base, so this
+            # is a check for order-of-magnitude wrongness, not for agreement.
+            if conversion.canonical != "USD" and measure is not None and canonical:
+                implied = measure["value"] / canonical
+                if not (MIN_USD_PER_BOE <= implied <= MAX_USD_PER_BOE):
+                    counts["rejected on value per barrel"] += 1
+                    clear_scale(conn, row["id"])
+                    continue
+            # A product line cannot exceed the reserve base it is part of.
+            #
+            # The value-per-barrel band catches an order of magnitude; it does
+            # not catch a component that is merely far too large relative to its
+            # own filer. Range's 2019 oil line resolves to 21.3 billion BOE
+            # against a total reserve base near 2 billion -- inside the band,
+            # because a wrongly-scaled component and a correctly-scaled measure
+            # can still produce a plausible-looking ratio.
+            #
+            # This is the identity the reserve_consistency view already tests,
+            # applied at resolution time: developed <= total, and a product is a
+            # subset of the whole. Only checked where the period actually has a
+            # total to check against.
+            if (not is_measure) and row["product"] and period_total is not None:
+                if canonical > period_total * 1.05:
+                    counts["rejected: component exceeds total"] += 1
+                    clear_scale(conn, row["id"])
+                    continue
+
             relabelled = (not is_measure) and unit != row["unit"]
             record_scale(
                 conn,

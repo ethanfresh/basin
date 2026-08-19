@@ -429,3 +429,13 @@ def record_producer_check(conn: sqlite3.Connection, check, cohort: str | None = 
         (check.cik, cohort, check.verdict, ",".join(check.concepts),
          check.phrase_hits, check.document, check.documents_read, check.note),
     )
+
+
+def clear_scale(conn: sqlite3.Connection, fact_id: int) -> None:
+    """Remove a stored magnitude for one fact.
+
+    Needed because rejection has to be able to undo. A resolver that declines
+    to write leaves whatever an earlier run wrote, so a value the plausibility
+    guard was added to catch survives the guard being added.
+    """
+    conn.execute("DELETE FROM fact_scale WHERE fact_id = ?", (fact_id,))

@@ -692,8 +692,8 @@
     <div class="controls">
       <select id="period"></select>
       <select id="product"><option value="">All products</option></select>
-      <label class="toggle" title="Rank every filer together, in BOE or USD, using magnitudes resolved against the filings">
-        <input type="checkbox" id="normalize"> Normalize
+      <label class="toggle" title="Show every filer in BOE or USD, using magnitudes resolved against the filings, instead of the units each one tagged">
+        <input type="checkbox" id="normalize" checked> Normalize Units
       </label>
     </div>
     <details class="callout" id="panel-warning" hidden>
@@ -1217,9 +1217,16 @@ async function loadPanel() {
   renderPanel();
 }
 
-// Which column the table is ordered by, and in which direction. Null means the
-// query's own order: most concepts filled first, then ticker.
-let sortColumn = null;
+// Which column the table is ordered by, and in which direction.
+//
+// Proved developed reserves, descending, because it is the closest thing this
+// schema has to "how big is this producer" -- reserves already in production,
+// which is what a peer table is usually opened to rank. It sorts only because
+// Normalize Units is on by default; as filed that column spans fourteen
+// declared units and ordering it would rank labelling conventions.
+//
+// Null means the query's own order: most concepts filled first, then ticker.
+let sortColumn = "proved_developed_reserves_boe";
 let sortDesc = true;
 let panelData = null;
 

@@ -199,18 +199,29 @@ def resolve(
 
     # Preference order among readings that all clear the wide band:
     #   1. inside the typical band -- a value per barrel producers report
-    #   2. stated by the document -- when the filer's tagged unit and its own
-    #      table header disagree, the table wins, because the figure was
-    #      located in that table
-    #   3. closest to the middle, on a log scale, since candidates differ by
-    #      orders of magnitude rather than percentages
+    #   2. closest to the middle of it, on a log scale, since candidates differ
+    #      by orders of magnitude rather than percentages
+    #   3. stated by the document, as the final tie-break
+    #
+    # The document used to outrank closeness, and that was wrong. A table header
+    # is evidence about the unit, not proof: it is read from whatever table the
+    # value was located in, and a filing has many tables. W&T tags gas reserves
+    # as 423,300,000,000 ft3 -- 423.3 Bcf, correct -- under a header reading
+    # MMBoe. Both readings clear the band, but the tagged one implies $9.23/BOE
+    # and the header one $1.54, at the very edge. Ranking the document first
+    # took the edge reading and multiplied the reserve base sixfold.
+    #
+    # Nothing that needs the header loses by this. Gulfport, the case the
+    # override exists for, has only one reading inside the typical band at all
+    # -- tagged bbl implies $0.80 and the header's Bcfe implies $4.80 -- so it
+    # is selected by the band test before this tie-break is ever consulted.
     typical_midpoint = (TYPICAL_MIN_USD_PER_BOE * TYPICAL_MAX_USD_PER_BOE) ** 0.5
     ratio, reserve, measure = min(
         viable,
         key=lambda t: (
             not (TYPICAL_MIN_USD_PER_BOE <= t[0] <= TYPICAL_MAX_USD_PER_BOE),
-            not t[1].from_document,
             _log_distance(t[0], typical_midpoint),
+            not t[1].from_document,
         ),
     )
 
