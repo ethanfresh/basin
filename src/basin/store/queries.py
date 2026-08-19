@@ -16,6 +16,31 @@ from basin.facts.concepts import ALL_CONCEPTS, BY_KEY
 SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data"
 
 
+# Cohort membership is the store's definition of "in scope", and every listing
+# and aggregate below requires it.
+#
+# It used to be an optional narrowing: pass a cohort and see that cohort, pass
+# nothing and see everything. But "everything" is not a wider view of the same
+# population -- it is a different population. The store keeps every company it
+# has ever ingested, because a fact is append-only and a company leaving the
+# cohort is not a reason to destroy history that citations depend on. So the
+# unfiltered panel drew SIC residue, non-producers dropped on evidence, filers
+# since acquired, and candidates the producer gate never admitted: 38 companies
+# and 86 rows, most of them nearly empty, indistinguishable from cohort members
+# with genuine coverage gaps.
+#
+# That is the one confusion the panel cannot afford. A blank cell is supposed to
+# mean "this filer did not disclose it" -- work for the extraction layer. A
+# blank row for a company that was never in scope is not work; it is noise that
+# makes the panel understate itself.
+#
+# Single-fact lookups (fact_locator, citation) and single-company views
+# deliberately do NOT filter: a citation has to resolve even when the company
+# it names has since left the cohort, or the store's own history becomes
+# unreadable.
+IN_COHORT = "c.cohort IS NOT NULL"
+
+
 def filing_url(cik: str, accession: str) -> str:
     """Human-readable SEC index page for a filing.
 
@@ -183,6 +208,7 @@ def panel(
         LEFT JOIN fact_verification v ON v.fact_id = f.id
         LEFT JOIN fact_scale sc ON sc.fact_id = f.id
         WHERE f.concept_key = ? AND f.period_end = ?
+          AND """ + IN_COHORT + """
     """
     params: tuple = (concept_key, period_end)
     if product:
@@ -279,7 +305,7 @@ def panel_latest(
               AND ud.product = COALESCE(ranked.product, '')
         LEFT JOIN fact_verification v ON v.fact_id = ranked.id
         LEFT JOIN fact_scale sc ON sc.fact_id = ranked.id
-        WHERE ranked.recency = 1
+        WHERE ranked.recency = 1 AND """ + IN_COHORT + """
     """
     params: tuple = (concept_key,)
     if product:
@@ -321,6 +347,7 @@ def panel_wide(
     period_end: str | None = None,
     product: str | None = None,
     cohort: str | None = None,
+    include_uncohorted: bool = False,
 ) -> dict[str, Any]:
     """The consolidated panel: one row per company and product, one column per KPI.
 
@@ -344,6 +371,19 @@ def panel_wide(
     whole table can be ordered by without asserting a comparison that does not
     hold. Sorting is the caller's decision, per column, and the unit count on
     each column is returned so the caller can refuse when it would be a lie.
+
+    **Only cohort members appear.** The store is append-only and keeps the facts
+    of companies that have left the cohort or were never admitted to one --
+    refiners, midstream partnerships, a biotechnology company, and candidates
+    the producer check has not yet adjudicated. They carry real facts, so they
+    were indistinguishable from members in the panel, and they were sparse
+    because they are not producers: 38 of the 123 companies shown, 86 rows,
+    filling columns that do not apply to them. A row whose emptiness means
+    "this company does not belong in this table" reads as a coverage gap, which
+    is the specific misrepresentation the panel is supposed to prevent.
+
+    ``include_uncohorted`` restores them, for coverage reporting that needs to
+    ask what the store holds rather than what the panel shows.
     """
     concept_keys = [c["key"] for c in concepts(conn)]
 
@@ -368,6 +408,8 @@ def panel_wide(
         LEFT JOIN fact_scale sc ON sc.fact_id = r.id
         WHERE r.recency = 1
     """
+    if not include_uncohorted:
+        sql += " AND c.cohort IS NOT NULL"
     params: tuple = ()
     if period_end:
         sql = sql.format(period_filter="WHERE f.period_end = ?")
@@ -473,6 +515,7 @@ def companies(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                MAX(f.period_end) AS latest_period
         FROM company c
         LEFT JOIN fact_current f ON f.cik = c.cik
+        WHERE """ + IN_COHORT + """
         GROUP BY c.cik
         ORDER BY concepts DESC, cells DESC, c.name
         """,
@@ -500,10 +543,11 @@ def coverage_matrix(
                COUNT(*) AS cells
         FROM company c
         LEFT JOIN fact_current f ON f.cik = c.cik
+        WHERE """ + IN_COHORT + """
     """
     params: tuple = ()
     if cohort:
-        sql += " WHERE c.cohort = ?"
+        sql += " AND c.cohort = ?"
         params = (cohort,)
     sql += " GROUP BY c.cik, f.concept_key"
     rows = _rows(conn, sql, params)
@@ -653,7 +697,7 @@ def reserve_ratios(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         SELECT r.*, c.name, c.ticker
         FROM reserve_consistency r
         JOIN company c ON c.cik = r.cik
-        WHERE r.issue IS NULL AND r.ratio IS NOT NULL
+        WHERE r.issue IS NULL AND r.ratio IS NOT NULL AND """ + IN_COHORT + """
         ORDER BY r.ratio
         """,
     )
@@ -894,6 +938,7 @@ def trends(
         LEFT JOIN fact_scale sc ON sc.fact_id = f.id
         WHERE f.concept_key = ?
           AND f.period_end LIKE '%-12-31'
+          AND """ + IN_COHORT + """
         ORDER BY f.cik, f.period_end
         """,
         (concept_key,),

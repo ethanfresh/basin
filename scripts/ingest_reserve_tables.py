@@ -154,6 +154,16 @@ def closes(readings: list[ReserveReading]) -> tuple[set[str], dict[str, str]]:
     return good, reasons
 
 
+def _is_power_of_ten(ratio: float) -> bool:
+    """Whether two figures differ only by a factor of 10, 100, 1000 ..."""
+    import math
+
+    if ratio <= 0:
+        return False
+    exponent = math.log10(ratio)
+    return abs(exponent - round(exponent)) < 1e-6 and round(exponent) != 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     conn = connect(args.store)
@@ -205,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     counts: collections.Counter = collections.Counter()
-    agree = disagree = 0
+    agree = disagree = rescaled = 0
     mismatches: list[str] = []
     written_total = 0
 
@@ -280,6 +290,15 @@ def main(argv: list[str] | None = None) -> int:
                 if mine and theirs:
                     if abs(mine - theirs) / theirs <= TOLERANCE:
                         agree += 1
+                    elif _is_power_of_ten(mine / theirs):
+                        # Same digits, different declared magnitude. Talos tags
+                        # 85,007 MMBbls where its own table column reads
+                        # (MBbls); Range tags 21,290 MMBbls against (MBbls) in
+                        # the same row. The table cannot make this error -- the
+                        # figure is as printed and its unit is its column
+                        # header -- so it is the table being right, not a
+                        # disagreement about what the number is.
+                        rescaled += 1
                     else:
                         disagree += 1
                         if len(mismatches) < 25:
@@ -332,11 +351,12 @@ def main(argv: list[str] | None = None) -> int:
     print()
     for key, value in counts.most_common():
         print(f"  {key:<48}{value:>7,}")
-    if agree or disagree:
-        rate = agree / (agree + disagree)
+    if agree or disagree or rescaled:
+        total = agree + disagree + rescaled
         print(
             f"\n  cross-check against tagged filers: {agree:,} agree, "
-            f"{disagree:,} disagree ({rate:.1%})"
+            f"{rescaled:,} agree on the digits but not the declared magnitude, "
+            f"{disagree:,} disagree ({(agree + rescaled) / total:.1%} on value)"
         )
         for line in mismatches:
             print(line)

@@ -30,7 +30,14 @@ import datetime as dt
 import sys
 from pathlib import Path
 
-from basin.cohorts import EXCLUDED, NON_PRODUCING_SIC, cohort_for, is_operator, producing_sic
+from basin.cohorts import (
+    EXCLUDED,
+    NON_PRODUCING_SIC,
+    SIC_OVERRIDES,
+    cohort_for,
+    is_operator,
+    producing_sic,
+)
 from basin.edgar import EdgarClient, SECError
 from basin.edgar.tickers import primary_ticker
 from basin.edgar.discovery import (
@@ -244,6 +251,13 @@ def _enumerate(codes: tuple[str, ...], since: str) -> list[FilerProfile]:
 
     Listing is not tested here. It is tested against the store in ``main``,
     where a succession that splits a ticker from a filing history can be seen.
+
+    The overridden filers are fetched by CIK afterwards, whatever their code.
+    An override says a filer belongs despite its SIC, and that has to mean
+    "look at this filer regardless of its SIC" as well -- otherwise Baytex,
+    HighPeak, Greenland, National Fuel Gas and Sky Quarry, whose codes are
+    1381, 4924 and 4955, are never enumerated, never reach the override, and
+    are dropped as though EDGAR had reclassified them.
     """
     profiles: list[FilerProfile] = []
     seen: set[str] = set()
@@ -268,6 +282,19 @@ def _enumerate(codes: tuple[str, ...], since: str) -> list[FilerProfile]:
                 if n % 200 == 0:
                     print(f"  profiled {n}/{len(ciks)}")
             print(f"  {kept} reporting since {since}, or not yet reporting")
+
+        outside = [c for c in SIC_OVERRIDES if c not in seen]
+        if outside:
+            print(f"fetching {len(outside)} overridden filer(s) whose SIC is "
+                  f"outside the producing set …")
+            for cik in outside:
+                try:
+                    p = fetch_profile(client, cik)
+                except SECError as exc:
+                    print(f"  ! {cik}: {exc}", file=sys.stderr)
+                    continue
+                print(f"  + {cik} {p.name[:34]:<34} SIC {p.sic} {p.sic_description}")
+                profiles.append(p)
 
     return profiles
 
