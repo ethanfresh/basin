@@ -383,6 +383,21 @@ class TestMarkupLookup:
             value=3_617_856_000.0,
         ) is None
 
+    def test_refuses_a_value_match_with_no_concept_to_match_on(self):
+        """A figure that agrees only on value and period is not evidence.
+
+        The guard above reads `if concept_tag`, so a caller that withheld the
+        tag turned it off and took the earliest lookalike in the document.
+        """
+        from basin.documents.inline import match_fact, tagged_figures
+
+        assert match_fact(
+            tagged_figures(self.DOC),
+            concept_tag=None,
+            period_end="2025-12-31",
+            value=3_617_856_000.0,
+        ) is None
+
 
 class TestSectionAndFolio:
     def test_heading_split_across_table_cells_is_recovered(self):
