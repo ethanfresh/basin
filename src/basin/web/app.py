@@ -131,10 +131,25 @@ def api_panel(
     concept: str = Query(...),
     period: str = Query(...),
     product: str | None = None,
+    cohort: str | None = None,
 ) -> list[dict]:
     conn = _conn()
     try:
-        return queries.panel(conn, concept, period, product)
+        # "latest" is not a period, it is a mode: each company's own most
+        # recent. Fiscal years do not align and filers stop tagging, so a
+        # single period_end understates coverage by about a fifth.
+        if period == queries.LATEST_PERIOD:
+            return queries.panel_latest(conn, concept, product, cohort)
+        return queries.panel(conn, concept, period, product, cohort)
+    finally:
+        conn.close()
+
+
+@app.get("/api/cohorts")
+def api_cohorts() -> list[dict]:
+    conn = _conn()
+    try:
+        return queries.cohorts(conn)
     finally:
         conn.close()
 
@@ -186,6 +201,25 @@ def api_trends(concept: str = Query(...), normalized: bool = True, limit: int = 
     conn = _conn()
     try:
         return queries.trends(conn, concept, normalized=normalized, limit=limit)
+    finally:
+        conn.close()
+
+
+@app.get("/api/kpis")
+def api_kpis(cohort: str | None = None) -> dict:
+    conn = _conn()
+    try:
+        return queries.company_concepts(conn, cohort)
+    finally:
+        conn.close()
+
+
+@app.get("/api/history")
+def api_history(cik: str = Query(...), concept: str = Query(...),
+                product: str | None = None) -> dict:
+    conn = _conn()
+    try:
+        return queries.company_history(conn, cik, concept, product)
     finally:
         conn.close()
 
