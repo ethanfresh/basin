@@ -117,23 +117,31 @@ A CIK is assigned once and never reused. A ticker is released when a company del
 
 Basin covers **traded US securities**, and cohort membership comes from a screener, so a producer with no live listing is excluded automatically. That is a deliberate scope decision. What is not acceptable is the exclusion being invisible, so every filer in the store carries a `listing_status` — `listed`, `not-listed`, or `superseded` — with the date it last filed.
 
-**Nine producers currently sit outside that boundary, and every one of them is still filing:**
+A filer with no listing is one of two very different things, and the difference is measurable. **Form 15** certifies termination of registration — the filer telling the SEC it intends to stop reporting — but saying so is not doing so. Read Form 15 against what was filed afterwards and the group splits cleanly:
 
-| Company | KPIs | Last filed |
+**Private filers — no listing, still filing periodic reports. This is the real gap:**
+
+| Company | KPIs | Last 10-K/10-Q | |
+|---|---|---|---|
+| Energy 11, L.P. | 7 | 2026-08-12 | non-traded partnership, never listed |
+| Energy Resources 12, L.P. | 6 | 2026-08-12 | non-traded partnership, never listed |
+| Everflow Eastern Partners LP | 4 | 2026-08-11 | non-traded partnership, never listed |
+| Continental Resources | 7 | 2026-07-31 | **filed Form 15 in 2023 and kept reporting** — public debt keeps the obligation alive |
+
+**Acquired or wound up — filed Form 15 and stopped. Not a gap; the filer is gone:**
+
+| Company | Deregistered | Last 10-K/10-Q |
 |---|---|---|
-| Energy 11, L.P. | 7 | 2026-08-12 |
-| Energy Resources 12, L.P. | 6 | 2026-08-12 |
-| Everflow Eastern Partners LP | 4 | 2026-08-11 |
-| Continental Resources | 7 | 2026-07-31 |
-| Coterra Energy | 7 | 2026-06-05 |
-| Civitas Resources | 7 | 2026-02-17 |
-| Vital Energy | 7 | 2025-12-29 |
-| Sitio Royalties | 7 | 2025-11-13 |
-| PHX Minerals | 6 | 2025-08-14 |
+| Coterra Energy | 2026-05-19 | 2026-05-06 |
+| Civitas Resources | 2026-02-10 | 2025-11-06 |
+| Berry Corp | 2026-01-09 | 2025-11-05 |
+| Vital Energy | 2025-12-29 | 2025-11-03 |
+| Sitio Royalties | 2025-09-02 | 2025-08-04 |
+| PHX Minerals | 2025-07-03 | 2025-05-08 |
 
-Continental went private in 2022 and still files 10-Ks against its public debt. Energy 11 and Energy Resources 12 are non-traded partnerships that file every year. Their facts are already in the store — they are simply not in a cohort, and so never in a peer table.
+Conflating the two overstated the gap at nine when it is four. The facts of all ten are already in the store — they are simply not in a cohort, and so never in a peer table.
 
-The **Data quality** view lists them, because a gap in the dataset belongs beside the other things the store knows are wrong with it rather than buried in a column nobody queries. Closing the gap means a second membership path for filers with no listing, which is not built and not currently planned.
+The **Data quality** view lists the four, because a gap in the dataset belongs beside the other things the store knows are wrong with it rather than buried in a column nobody queries. Closing it means a second membership path for filers with no listing, which is not built and not currently planned.
 
 ### Following a change of registrant
 

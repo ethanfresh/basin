@@ -70,12 +70,22 @@ CREATE TABLE IF NOT EXISTS company (
     -- partnerships that file every year. They are producers, they are current,
     -- and no screener will ever return them.
     --
-    --   listed      -- currently traded; eligible for a cohort
-    --   not-listed  -- files with the SEC, no live listing. Out of scope, not
-    --                 out of interest: recorded so the gap can be measured and
-    --                 closed deliberately rather than discovered later
-    --   superseded  -- a registrant replaced by a successor; see
-    --                 registrant_succession. Not a company, a duplicate of one
+    --   listed        -- currently traded; eligible for a cohort
+    --   private-filer -- no listing, still filing periodic reports. This is the
+    --                    real gap: a producer reporting to the SEC that no
+    --                    screener returns
+    --   deregistered  -- filed Form 15 and stopped reporting. Acquired or wound
+    --                    up. Not a gap in coverage; the filer no longer exists
+    --                    to cover
+    --   superseded    -- a registrant replaced by a successor; see
+    --                    registrant_succession. Not a company, a duplicate of one
+    --
+    -- The private/deregistered split turns on Form 15 read against what came
+    -- after it. Form 15 certifies termination of registration -- the filer
+    -- saying it intends to stop reporting -- but saying so is not doing so.
+    -- Continental filed Form 15 in January 2023 and has filed a 10-K every year
+    -- since, because public debt keeps the obligation alive. Six filers said it
+    -- and meant it; four never said it at all.
     listing_status  TEXT,
     last_filing_date TEXT,               -- most recent filing of any form
     listing_note    TEXT,

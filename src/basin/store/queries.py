@@ -442,10 +442,14 @@ def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
 
     # Producers the current scope cannot reach.
     #
-    # This is a gap in the dataset, so it belongs beside the other things the
-    # store knows are wrong with it -- not buried in a column nobody queries.
-    # Scope is traded US securities and stays that way; what is not acceptable
-    # is the exclusion being invisible.
+    # Only private filers -- no listing, still filing periodic reports. A
+    # company that filed Form 15 and stopped reporting was acquired, and is not
+    # a gap in coverage: there is nothing left to cover. Conflating the two
+    # overstated this list at 9 when the real number is 4.
+    #
+    # It belongs beside the other things the store knows are wrong with it, not
+    # buried in a column nobody queries. Scope is traded US securities and stays
+    # that way; what is not acceptable is the exclusion being invisible.
     unreached = _rows(
         conn,
         """
@@ -454,9 +458,18 @@ def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
                MAX(f.period_end) AS latest_period
         FROM company c
         JOIN fact f ON f.cik = c.cik
-        WHERE c.listing_status = 'not-listed'
+        WHERE c.listing_status = 'private-filer'
         GROUP BY c.cik
-        HAVING concepts > 0
+        -- A reserve or production concept, not merely any concept. Revenue and
+        -- capex alone describe a company that spends money and sells something
+        -- -- Rivulet Entertainment survived the SIC-1311 sweep on exactly that
+        -- basis. Only a filer with a reserve base is a producer being missed.
+        HAVING SUM(
+            f.concept_key IN (
+                'proved_developed_reserves_boe', 'proved_undeveloped_reserves_boe',
+                'proved_reserves_boe', 'standardized_measure', 'production_volume'
+            )
+        ) > 0
         ORDER BY c.last_filing_date DESC
         """,
     )

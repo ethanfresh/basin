@@ -30,13 +30,20 @@ from basin.facts.producer import RESERVE_CONCEPTS
 from basin.store import DEFAULT_DB_PATH, connect
 
 LISTED = "listed"
-NOT_LISTED = "not-listed"
+PRIVATE_FILER = "private-filer"
+DEREGISTERED = "deregistered"
 SUPERSEDED = "superseded"
 
-# A filer that has submitted nothing for two years has stopped, whatever the
-# reason -- acquired, wound up, gone dark. Worth separating from one that is
-# still reporting, because only the second is a live gap in coverage.
-DORMANT_AFTER = "2025-01-01"
+# Periodic reports. Continuing to file one of these is what separates a company
+# that went private from one that ceased to exist.
+PERIODIC_FORMS = ("10-K", "10-Q", "20-F", "40-F")
+
+# Form 15 certifies termination of registration -- the filer is telling the SEC
+# it intends to stop reporting. It is the only unambiguous "this is over"
+# marker EDGAR has; Form 25 is delisting from an exchange, which a company can
+# survive. Continental filed both in 2022-23 and has filed a 10-K every year
+# since, because its public debt keeps the obligation alive.
+DEREGISTRATION_FORMS = ("15-12B", "15-12G", "15F-12B", "15F-12G")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -72,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             # membership all sit on predecessor 34088, which would otherwise be
             # reported as an unreachable filer.
             listed = ticker_map.primary(cik) is not None or company["cohort"] is not None
-            last_filed = _last_filing(client, cik)
+            last_filed, last_periodic, deregistered_on = _filing_history(client, cik)
             concepts = [
                 r[0] for r in conn.execute(
                     f"""SELECT DISTINCT concept_key FROM fact WHERE cik = ?
@@ -80,52 +87,61 @@ def main(argv: list[str] | None = None) -> int:
                     (cik, *RESERVE_CONCEPTS),
                 )
             ]
-            rows.append((company, listed, last_filed, concepts))
+            rows.append((company, listed, last_filed, concepts,
+                         last_periodic, deregistered_on))
 
     out = []
-    for company, listed, last_filed, concepts in rows:
+    for company, listed, last_filed, concepts, last_periodic, dereg_on in rows:
         cik = company["cik"]
         if cik in superseded:
             status, note = SUPERSEDED, "registrant replaced by a successor"
         elif listed:
             status, note = LISTED, None
+        elif dereg_on and not (last_periodic and last_periodic > dereg_on):
+            # Filed Form 15 and stopped reporting. The company was acquired or
+            # wound up; it is not a gap in coverage, it is a company that no
+            # longer exists to cover.
+            status = DEREGISTERED
+            note = (f"deregistered {dereg_on}; last periodic report "
+                    f"{last_periodic or 'none'}")
         else:
-            active = bool(last_filed and last_filed >= DORMANT_AFTER)
-            has_reserves = bool(concepts)
-            if active and has_reserves:
-                note = ("still filing, no live listing -- a producer this scope "
-                        "cannot reach")
-            elif active:
-                note = "still filing, no live listing"
-            else:
-                note = f"no live listing; last filed {last_filed or 'never'}"
-            status = NOT_LISTED
+            # No listing and still filing periodic reports. This is the real
+            # gap: a producer reporting to the SEC that no screener returns.
+            status = PRIVATE_FILER
+            note = (f"no listing, still filing -- last periodic report "
+                    f"{last_periodic or 'none'}")
+            if dereg_on:
+                note += f" (filed Form 15 in {dereg_on[:4]} and kept reporting)"
         out.append((cik, company["name"], status, last_filed, note,
-                    bool(concepts), last_filed and last_filed >= DORMANT_AFTER))
+                    bool(concepts), last_periodic, dereg_on))
 
     counts = collections.Counter(r[2] for r in out)
-    print(f"listed {counts[LISTED]} | not listed {counts[NOT_LISTED]} "
-          f"| superseded {counts[SUPERSEDED]}\n")
+    print(f"listed {counts[LISTED]} | private filers {counts[PRIVATE_FILER]} "
+          f"| deregistered {counts[DEREGISTERED]} | superseded {counts[SUPERSEDED]}\n")
 
-    missed = [r for r in out if r[2] == NOT_LISTED and r[5] and r[6]]
-    print("=" * 74)
+    missed = [r for r in out if r[2] == PRIVATE_FILER and r[5]]
+    print("=" * 78)
     print(f"PRODUCERS THIS SCOPE CANNOT REACH -- {len(missed)}")
-    print("  still filing, reporting reserve or production concepts, not traded")
-    print("=" * 74)
-    for cik, name, _s, last, _n, _c, _a in missed:
-        print(f"  {name[:46]:<46} last filed {last}  ({cik})")
+    print("  no listing, still filing periodic reports. A real gap in coverage.")
+    print("=" * 78)
+    for cik, name, _s, _last, _n, _c, periodic, dereg in missed:
+        mark = f"  (Form 15 in {dereg[:4]}, kept reporting)" if dereg else ""
+        print(f"  {name[:44]:<44} last 10-K/Q {periodic}{mark}")
 
-    stopped = [r for r in out if r[2] == NOT_LISTED and not r[6]]
-    print(f"\nno longer filing -- {len(stopped)} (acquired, wound up, or dark)")
-    for cik, name, _s, last, _n, _c, _a in stopped:
-        print(f"  {name[:46]:<46} last filed {last or 'never'}")
+    gone = [r for r in out if r[2] == DEREGISTERED]
+    print("\n" + "=" * 78)
+    print(f"ACQUIRED OR WOUND UP -- {len(gone)}")
+    print("  filed Form 15 and stopped reporting. Not a gap; the filer is gone.")
+    print("=" * 78)
+    for cik, name, _s, _last, _n, _c, periodic, dereg in gone:
+        print(f"  {name[:44]:<44} deregistered {dereg}, last 10-K/Q {periodic or 'none'}")
 
     if not args.apply:
         print("\nreport only; pass --apply to write")
         return 0
 
     with conn:
-        for cik, _name, status, last, note, _c, _a in out:
+        for cik, _name, status, last, note, _c, _p, _d in out:
             conn.execute(
                 "UPDATE company SET listing_status = ?, last_filing_date = ?, "
                 "listing_note = ? WHERE cik = ?",
@@ -135,13 +151,28 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _last_filing(client: EdgarClient, cik: str) -> str | None:
+def _filing_history(client: EdgarClient, cik: str) -> tuple[str | None, str | None, str | None]:
+    """``(last filing, last periodic report, deregistration date)``.
+
+    All three are needed together, because the useful question is not whether a
+    filer went quiet but whether it kept *reporting* after telling the SEC it
+    would stop. A company that files Form 15 and then files nothing was
+    acquired. One that files Form 15 and keeps filing 10-Ks is private and
+    still operating.
+    """
     try:
         payload = client.get_json(submissions_url(cik))
     except (NotFound, SECError):
-        return None
-    dates = payload.get("filings", {}).get("recent", {}).get("filingDate", [])
-    return max(dates) if dates else None
+        return None, None, None
+
+    recent = payload.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    dates = recent.get("filingDate", [])
+
+    last_filed = max(dates) if dates else None
+    periodic = [d for d, f in zip(dates, forms) if f.split("/")[0] in PERIODIC_FORMS]
+    dereg = [d for d, f in zip(dates, forms) if f.split("/")[0] in DEREGISTRATION_FORMS]
+    return last_filed, (max(periodic) if periodic else None), (max(dereg) if dereg else None)
 
 
 if __name__ == "__main__":
