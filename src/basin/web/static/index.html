@@ -1305,9 +1305,12 @@ function renderPanel() {
     <tr data-cik="${esc(r.cik)}">
       <td class="ticker sticky-col history-open" title="Reported history">${esc(r.ticker || "—")}</td>
       <td class="name sticky-name history-open" title="Reported history">${esc(r.name)}${reportingTags(r)}</td>
+      <!-- Every row says which product it is. A dash read as "no product",
+           when the row is the aggregate of all of them -- the figure most
+           readers actually want, and the one that was hardest to identify. -->
       <td class="col-product">${r.product
           ? `<span class="tag product">${esc(r.product)}</span>`
-          : `<span class="sub">—</span>`}</td>
+          : `<span class="tag product total" title="All products combined, as the filer reports the line">total</span>`}</td>
       ${data.concept_keys.map((k) => wideCell(r, k, normalized)).join("")}
     </tr>`).join("");
 
@@ -1338,8 +1341,19 @@ function wideCell(row, key, normalized) {
 
   const value = normalized ? cell.canonical_value : cell.value;
   const unit = normalized ? cell.canonical_unit : cell.unit;
+  // Normalizing, with no resolved magnitude: show what the filer reported,
+  // in the filer's own unit, marked as not normalized.
+  //
+  // A tilde here hid a number the store actually holds. The figure is
+  // disclosed and cited; what is missing is only the conversion to a common
+  // scale, so the honest cell states the reported figure and says it does not
+  // share the column's scale -- rather than reading as "not disclosed", which
+  // is a different and worse claim.
   if (value == null) {
-    return `<td class="kpi-col num empty-cell" title="Reported ${esc(cell.value)} ${esc(cell.unit)}, magnitude not resolved against the filing">~</td>`;
+    if (cell.value == null) return `<td class="kpi-col num empty-cell">·</td>`;
+    return `<td class="kpi-col num as-filed"
+      title="As filed: ${esc(cell.value)} ${esc(cell.unit)}. Not converted to BOE — the filing does not settle the magnitude, so this figure is not comparable with the rest of the column.">
+      <span class="sub">${fmtCompact(cell.value)}<span class="unit">${esc(cell.unit || "")}</span></span></td>`;
   }
   const title = `${esc(cell.tag)}\n${esc(cell.period_end)} · ${esc(cell.form)} ${esc(cell.accession)}`
     + `${cell.verified ? "\nverified in the filing" : "\nnot located in the filing"}`

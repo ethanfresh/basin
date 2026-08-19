@@ -151,7 +151,16 @@ def resolve(
     # to infer around: the divisor is fixed and only the unit stays open. The
     # value-per-barrel test then does the job it is actually good at --
     # choosing between units -- instead of standing in for a stated fact.
-    effective_scale = (10**declared_scale) if declared_scale else reserve_scale
+    #
+    # `is not None`, not truthiness. A declared scale of 0 means "printed as
+    # tagged, no scaling applied" -- a statement by the filing, and the most
+    # certain of the three cases. Testing it for truth threw exactly that case
+    # away and went back to inferring, for 2,333 of the store's verified facts
+    # and for every figure read off a printed table, where the divisor is 1 by
+    # construction.
+    effective_scale = (
+        (10**declared_scale) if declared_scale is not None else reserve_scale
+    )
     reserves = candidates(
         reserve_value, reserve_unit, effective_scale, header_units
     )

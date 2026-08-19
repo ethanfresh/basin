@@ -8,7 +8,7 @@ Basin consolidates that into one queryable panel — companies × metrics × per
 
 It is built for people who need this data and cannot justify an enterprise terminal seat: smaller investment firms, lenders, consultants, corporate development teams, and accounting firms.
 
-> **Status: Facts layer complete and verified, with a consolidated panel over it.** 91 companies across two cohorts, 19,729 facts drawn from 3,679 cited filings, and **every current cell checked against the document it cites — 97% located verbatim**. The panel is now the table the project is named for: every company against every KPI at once, not one metric at a time. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
+> **Status: Facts layer complete and verified, with a consolidated panel over it.** 91 companies across two cohorts, 19,729 facts drawn from 3,679 cited filings, and **every current cell checked against the document it cites — 98% located verbatim**. The panel is now the table the project is named for: every company against every KPI at once, not one metric at a time. The extraction, derivation, change-detection and delivery layers are not started. See [Roadmap](#roadmap).
 
 ---
 
@@ -80,24 +80,37 @@ The evaluation harness is not overhead around the product. It is the product's c
 
 **91 companies: 75 Oil & Gas E&P, 16 Oil & Gas Integrated.**
 
-Membership is not a hand-written list and not an SIC code. SIC 1311 sweeps in midstream companies, refiners, royalty trusts, oilfield services, and — observed in the population — a biotechnology company. The earlier filter matched substrings against company names (`"royalt"`, `"midstream"`, `"pipeline"`), which cannot tell a royalty vehicle from an operator when the name does not say so.
+Membership is not a hand-written list. It is derived from **the SEC's own SIC classification**, which EDGAR publishes free in the submissions API and — critically — lets you enumerate in reverse: every filer under a code. Three codes hold companies that own hydrocarbon reserves:
 
-Cohort now comes from **Finviz's industry classification**, restricted to the two industries whose companies produce hydrocarbons and therefore own reserves. Drilling and Equipment & Services sell services to producers; Midstream gathers and fractionates third-party volumes under fee contracts, booking throughput rather than reserves; Refining buys crude and sells products. None of them have a reserve base, a lifting cost or a production volume — which is to say none of them have the metrics this schema is built out of.
+| SIC | EDGAR's description | Cohort |
+|---|---|---|
+| `1311` | Crude Petroleum & Natural Gas | Oil & Gas E&P |
+| `6792` | Oil Royalty Traders | Oil & Gas E&P |
+| `2911` | Petroleum Refining | Oil & Gas Integrated |
+
+Drilling and field services sell to producers; midstream gathers and fractionates third-party volumes under fee contracts, booking throughput rather than reserves. Neither has a reserve base, a lifting cost or a production volume — which is to say neither has the metrics this schema is built out of.
 
 **A cohort is a KPI schema, not a label.** Comparison is legal within one and forbidden across, because putting an E&P and a pipeline in one reserves table asserts a comparability that does not exist. The panel enforces this rather than leaving it to the reader.
 
-### The classification is good, and it is not clean
+### SIC proposes; the filing disposes
 
-Two securities Finviz places in a producing industry are not energy companies at all, and three more do not produce. Each was caught by a test a non-producer fails by definition — a company that lifts hydrocarbons has a reserve base and says so, either in tagged concepts or in its annual report:
+A SIC code records what a registrant *registered as*, not what it does, and it is never revisited. On its own it is far too noisy to assign a cohort on: SIC 1311 sweeps in shells, midstream partnerships, refiners and — observed in the population — a biotechnology company. So the code is a proposal, closed by two things that are not the code.
+
+**Thirteen filers carry an explicit override**, each one line of source with its reason ([`src/basin/cohorts.py`](src/basin/cohorts.py)). Seven are integrated majors EDGAR codes `1311` rather than `2911` — Shell, TotalEnergies, Eni, Petrobras, Ecopetrol, Cenovus — for no reason visible in the filings; left uncorrected they would join the E&P cohort and the panel would put an integrated filer's consolidated per-BOE costs beside a pure-play's. ConocoPhillips is the reverse: still coded `2911 Petroleum Refining`, which it has not been since it spun off Phillips 66 in 2012. A deviation from the SEC's classification is a decision, so it is written down where it can be argued with, rather than absorbed into a name-matching heuristic.
+
+**Every other candidate must earn membership by disclosure.** A filer joins the cohort only once `scripts/check_producers.py` has recorded that its annual report was read and reserves were found — a company that lifts hydrocarbons has a reserve base and says so, either in tagged concepts or in prose. Candidates SIC proposes and no filing has confirmed are reported and held out, never admitted quietly.
+
+Five filers sit in a producing code and produce nothing:
 
 | Excluded | Why |
 |---|---|
-| `MHM` | A Bank of America structured note, filed under Oil & Gas Equipment & Services |
 | `TGS` | Transportadora de Gas del Sur — an Argentine gas pipeline. **0 reserve-language hits in 1.27M characters** of its 20-F; tags only revenue and capex |
 | `SLNG` | Stabilis Solutions — small-scale LNG distribution, not upstream. 0 hits |
 | `VIVK` | Vivakor — oilfield waste remediation and crude transport. 0 hits |
 | `NRT` | North European Oil Royalty Trust — passive royalty on German concessions. 4 hits, all risk-factor prose, against **30–90 for every other royalty trust in the cohort** |
 | `CKX` | CKX Lands — a Louisiana land lessor. Its 10-K states the position outright: reserve information *"is not available. A schedule indicating such reserve quantities is, therefore, not presented."* |
+
+SIC also settles a question name-matching could only guess at. `6792 Oil Royalty Traders` is EDGAR's own code for royalty and minerals vehicles, so it decides `is_operator` outright: those filers hold an interest in production someone else lifts, and a blank lifting cost against them is the business model rather than a coverage gap. Texas Pacific Land is the case that proves it — nothing in its name says royalty, and the old substring test called it an operator.
 
 The check runs over the whole cohort and reports three verdicts. `unknown` — nothing was available to test — is deliberately distinct from `non-producer`, which means the filing was read and holds no reserves. Current standing: **89 producers, 5 non-producers (all excluded), 3 untested shells.**
 
@@ -186,23 +199,34 @@ Reserve life (R/P ratio), reserve replacement ratio, finding & development cost 
 
 ## Coverage, measured
 
-Across all 91 cohort members, after an exhaustive sweep of every form each filer has submitted:
+The number that matters is not how much XBRL carries. It is the distance between what XBRL carries and what is **publicly locatable in the filings** — because that distance is the product.
 
-| Concept | Filers reporting it |
-|---|---|
-| Capital expenditure | 71 / 91 |
-| Oil & gas revenue | 71 / 91 |
-| Standardized measure | 47 / 91 |
-| Total proved reserves | 43 / 91 |
-| Proved developed reserves | 40 / 91 |
-| Production volume | 37 / 91 |
-| Proved undeveloped reserves | 37 / 91 |
-| **Average realized price** | **8 / 91** |
-| **Production cost per BOE** | **2 / 91** |
+Measured across the 89 producer-verified cohort members. "Locatable" means the full-text index finds the disclosure's table in an annual report already in the corpus, on a filer the SEC requires to publish it:
 
-**The most important result here is a negative one.** Broadening ingestion from 10-K only to every form the filer submits barely moved the two commercially valuable fields. Realized price reaches 8 filers in 91; production cost per BOE reaches 2. This was previously a sampling finding; it now holds after a complete sweep, which means those fields are not missing because of how Basin fetches — they are genuinely untagged.
+| Panel column | In XBRL | Locatable in the filings | The gap |
+|---|---|---|---|
+| Capital expenditure | 71 / 89 | — | — |
+| Oil & gas revenue | 71 / 89 | — | — |
+| Proved developed reserves | 50 / 89 | **86 / 89** | +37 |
+| Total proved reserves | 49 / 89 | **86 / 89** | +38 |
+| Proved undeveloped reserves | 49 / 89 | **86 / 89** | +37 |
+| Standardized measure | 47 / 89 | **87 / 89** | +40 |
+| Production volume | 37 / 89 | **68 / 89** | +34 |
+| **Average realized price** | **8 / 89** | **68 / 89** | **+60** |
+| **Production cost per BOE** | **2 / 89** | **68 / 89** | **+68** |
 
-Both are mandated disclosures under SEC Regulation S-K Subpart 1200 and ASC 932. The data is unambiguously present in the documents; it is simply not machine-readable. **That gap — between "the SEC requires this disclosed" and "nobody tagged it" — is precisely the gap a terminal subscription currently charges to close,** and it is the extraction layer's entire mandate.
+**The most important result here is a negative one, and it has a positive on the other side of it.** Broadening ingestion from 10-K only to every form each filer submits barely moved the two commercially valuable fields: realized price reaches 8 filers in 89, production cost per BOE reaches 2. Those fields are not missing because of how Basin fetches. They are genuinely untagged.
+
+And they are genuinely *there*. Both are mandated by Regulation S-K Subpart 1200, both are printed in every one of those filings, and the full-text index finds the table carrying them in 68 of 89. The same holds for reserves: XBRL reaches half the cohort, the reserve table is locatable in 86 of 89.
+
+**That distance — between "the SEC requires this disclosed" and "nobody tagged it" — is precisely what a terminal subscription charges to close.** It is the extraction layer's entire mandate, and it is measurable rather than asserted, which is what makes it a target instead of a hope.
+
+Two mechanisms close it, and the second is what makes the first affordable:
+
+- **Read the table, not the tag.** A figure read from a reserve or production table carries no scale to resolve — the figure is the figure as printed, and its unit is its column header. This is structurally safer than XBRL for exactly the errors XBRL makes: Range tags oil reserves `21,290 MMBbls` in its own markup while the same column of the same table reads `(MBbls)`, a thousand-fold error the table path cannot have.
+- **Locate before parsing.** A 10-K holds a few hundred tables and the caller has to know which document to open at all. [`document_search`](src/basin/store/schema.sql), an FTS5 index over 13.2 million lines of the corpus, answers "which documents use this disclosure's language, and where do its rows cluster" in one query. On a 60-document sample it flagged every document the reserve extractor could read and ruled out 27 of 60 outright.
+
+What is locatable is not yet what is extracted; the current shortfall is measured and enumerated in [`docs/panel-gaps.md`](docs/panel-gaps.md).
 
 Three findings that shaped how the cohort is read:
 
@@ -284,7 +308,7 @@ Basin does not rewrite a filer's unit — inventing a corrected label is worse t
 
 **Resolving a magnitude takes two steps, and they are different in kind.** The scale the filing prints a figure at is *measured*, by finding the value in the document. That leaves two candidate readings — as tagged, and as printed — and choosing between them is *inference*. Verified scale alone cannot decide it: Diamondback and CNX both verify at a scale of 1,000, and the correct reading is the opposite one in each case.
 
-What decides it is an economic identity. The standardized measure is a discounted present value of the same reserves, in dollars, so one divided by the other is a value per barrel — and that number has a range no real producer falls outside. Diamondback reads $11.20/BOE descaled against $0.01 as tagged; CNX reads $3.15/BOE as tagged against $3,146 descaled. The monetary side anchors it, because XBRL monetary facts are reliably tagged in dollars while volume unit labels are not.
+What decides it is an economic identity. The standardized measure is a discounted present value of the same reserves, in dollars, so one divided by the other is a value per barrel — and that number has a range no real producer falls outside. Diamondback reads $10.20/BOE descaled against $0.01 as tagged; CNX reads $3.15/BOE as tagged against $3,146 descaled. The monetary side anchors it, because XBRL monetary facts are reliably tagged in dollars while volume unit labels are not.
 
 **The unit family comes from the document too.** Scale resolution alone trusts the tagged unit, and that label is sometimes wrong in a way no scale arithmetic can see — Gulfport tags total proved reserves in `bbl` under a table headed `Total (Bcfe)`. Units are read from the filing at verification time, both inline and from column headers, and each becomes a candidate reading. Read as barrels Gulfport implies $0.80/BOE, which clears a wide sanity check and is still not a number a producer reports; read as Bcfe it implies $4.80.
 
@@ -294,7 +318,7 @@ Candidates are ranked in three steps: readings inside the typical **$1.50–$50*
 
 **Rejection has to be able to undo.** A resolver that merely declines to write leaves whatever an earlier, worse run wrote — which is how W&T's 4.2e17 survived the plausibility guard added to catch exactly it. Rejecting a reading now clears any magnitude already stored for that fact.
 
-Gulfport drops from 4.25 billion BOE to **708.8 million**, and Devon's `MMcfe` mislabel resolves to **2,428 MMBoe at $7.73/BOE**, settled by evidence from the document rather than by assumption. Every resolution records the ratio it turned on and the readings it rejected; a cell whose candidates are all implausible stays unresolved rather than guessed at. **1,956 cells are resolved** — down from 2,601 before these fixes, because several hundred were resolved wrongly and are now honestly blank. Readings above 1e11 BOE fall from 63 to none, and the largest magnitude in the store from 4.3e17 to 4.3e10.
+Gulfport drops from 4.25 billion BOE to **708.8 million**, and Devon's `MMcfe` mislabel resolves to **2,428 MMBoe at $7.73/BOE**, settled by evidence from the document rather than by assumption. Every resolution records the ratio it turned on and the readings it rejected; a cell whose candidates are all implausible stays unresolved rather than guessed at. **1,819 cells are resolved** — down from 2,601 before these fixes, because several hundred were resolved wrongly and are now honestly blank. Readings above 1e11 BOE fall from 63 to none, and the largest magnitude in the store from 4.3e17 to 4.6e9, which is a reserve base a real producer holds. *(Measured against the re-verified store; the resolver has been revised again since, so this figure will move on the next run.)*
 
 This is the sharpest form of the comparability problem so far, and it lands in the Facts layer — the one that was supposed to be the easy, exact one. XBRL removes the risk of a *fabricated* number; it does not deliver a *comparable* one.
 
@@ -304,36 +328,38 @@ This is the sharpest form of the comparability problem so far, and it lands in t
 
 Every stored value is checked against the filing it cites. Verification fetches the filing's documents, flattens them to text, finds the value, and records the verbatim span, the page, the line, the `Item N.` heading and the scale the filing printed it at.
 
-**9,502 facts checked. 9,300 located verbatim — 97%.**
+**9,502 facts checked. 9,304 located verbatim — 98%.**
 
 | Status | Count | |
 |---|---|---|
-| found | 9,300 | 97% |
+| found | 9,304 | 98% |
 | not_found | 90 | 1% |
-| unverifiable | 112 | 1% |
+| unverifiable | 108 | 1% |
 
 Every current cell in the store has been checked.
 
-**62% of verified facts are stored at a different scale than the filing prints them,** and **75 filers use different scales for different concepts**, because reserve tables and financial statements are presented differently in the same document.
+**64% of verified facts are stored at a different scale than the filing prints them,** and **76 filers use different scales for different concepts**, because reserve tables and financial statements are presented differently in the same document.
 
 Three things this pass taught:
 
-- **A match needs the filing's own precision, not a flat tolerance.** Accepting any tagged figure within 0.5% is wide enough, at reserve-table magnitudes, to match a different number entirely. Diamondback's proved reserves are 3,617,856 MBoe; the capitalized-costs table carries 3,613 at scale 6, which is 0.134% away, so verification matched an unrelated figure and recorded a printed scale taken from it. The resolver was then handed a scale from the wrong number, found two readings implying $0.01 and $10,202 per BOE, and correctly rejected both — the cell was lost to a verification fault, not a resolution one. The only difference a genuine match may carry is the rounding the filing applied when printing, so the allowance is now half of the last printed place: Diamondback's false match is 4,856,000 away against an allowance of 500,000. **The counts above predate this change; the store has not been re-verified under it.**
-- **Location method shifts with filing age.** On 2023+ filings, 98% of figures were found in markup. On pre-2023 filings it is **54% markup / 46% text** — older EDGAR HTML carries far less structured tagging, so nearly half of historical values lean on the weaker method.
+- **A match needs the filing's own precision, not a flat tolerance.** Accepting any tagged figure within 0.5% is wide enough, at reserve-table magnitudes, to match a different number entirely. Diamondback's proved reserves are 3,617,856 MBoe; the capitalized-costs table carries 3,613 at scale 6, which is 0.134% away, so verification matched an unrelated figure and recorded a printed scale taken from it. The resolver was then handed a scale from the wrong number, found two readings implying $0.01 and $10,202 per BOE, and correctly rejected both — the cell was lost to a verification fault, not a resolution one. The only difference a genuine match may carry is the rounding the filing applied when printing, so the allowance is now half of the last printed place: Diamondback's false match is 4,856,000 away against an allowance of 500,000. The whole store has been re-verified under this rule, and the counts above are that pass. It recovered Diamondback's FY2025 reserves, which now resolve at **$10.20/BOE**.
+- **Tightening a match made verification find *more*, not less.** The expectation was that a stricter rule would push some `found` rows into `not_found`. Instead `found` rose slightly and `unverifiable` fell, because a loose match does not only accept a wrong figure — it consumes the fact, so the right figure elsewhere in the document is never reached. Precision and recall moved the same way here.
+- **Location method shifts with filing age, and further than it looked.** On 2023+ filings, **99% of figures are found in markup**. On pre-2023 filings it is **27% markup / 73% text** — the loose tolerance had been flattering old filings by accepting weak markup matches, and once the allowance comes from printed precision, most historical values fall back to the text method. Nearly three-quarters of pre-2023 values lean on the weaker method, which is a worse position than the previous 54/46 suggested.
 - **Verification must depend on the filing, not on an earlier download.** It originally searched only documents already in the corpus, which silently bounded it by another script's scope: a 40-F or 6-K whose exhibits were never fetched had only its cover sheet to search, and every figure in it recorded as not found. **186 revenue and capex facts failed this way**, 125 on those two forms. Exhibits are now read from the filing index and fetched on demand, which recovered 148 of 238 failures and eliminated the 6-K cases entirely.
 
 The remaining 90 are a diffuse tail across eight forms and nine concepts, with no dominant cause.
 
 ## Running it
 
-The SEC requires a declared `User-Agent`; the client refuses to make a request without one rather than sending a default. Cohort sync needs a Finviz Elite API token, read from the environment and never stored in the repository.
+The SEC requires a declared `User-Agent`; the client refuses to make a request without one rather than sending a default. Nothing else needs credentials — every source is public and unauthenticated.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
 export BASIN_SEC_USER_AGENT="Basin research (you@example.com)"
-export FINVIZ_AUTH_TOKEN="..."          # Elite export API token
 
-# Cohort: pull the producing industries, resolve tickers to CIKs, reconcile
+# Cohort: enumerate the producing SIC codes, reconcile membership
+python scripts/sync_cohorts.py                # report first: it holds out
+python scripts/check_producers.py --apply     # adjudicate held candidates
 python scripts/sync_cohorts.py --apply
 python scripts/sync_tickers.py --apply      # canonical tickers from the SEC
 python scripts/resolve_succession.py --apply  # follow changes of registrant
@@ -390,7 +416,7 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 - [x] **Identity** — ticker for presentation, CIK for keying, a partial unique index to enforce it, and an evidence-based resolver for changes of registrant
 - [x] **Two reporting axes** — taxonomy (can we read it) and disclosure regime (does it mean the same thing), both measured
 - [x] **A document corpus** — **4,269 documents across 3,559 of the 3,679 cited filings**, 1,267 primary and 3,002 exhibits, including 8-K EX-99.1 earnings releases and 40-F exhibits, because the reserve disclosure is often not in the document the filing points at. All of them are parsed into `document` / `document_line` and the full-text index: **13,245,443 lines**, each carrying the page and line coordinates a citation is read by. Indexing takes the corpus on disk as its input and fetches nothing, so it re-runs whenever the parser improves.
-- [x] **Document verification** — every current cell located in the filing it cites, with the matched span, page, line and printed scale. 97% of 9,502
+- [x] **Document verification** — every current cell located in the filing it cites, with the matched span, page, line and printed scale. 98% of 9,502
 - [x] **The product split, from the filings** — 5,408 dimensioned facts read from inline XBRL, recovering the oil / gas / NGL axis the `companyfacts` API drops
 - [x] **A comparable panel** — resolved magnitudes with the evidence and the rejected readings recorded; unresolved cells shown unranked rather than guessed at, and a rejection that clears what an earlier run wrote
 - [x] **The consolidated table** — one row per company and product, one column per KPI, sortable only on columns whose values share a scale
@@ -423,6 +449,6 @@ The app opens the store read-only, and every query lives in `basin.store.queries
 
 ## Data sources
 
-Filings and XBRL come from the SEC's public EDGAR system and its free APIs at `data.sec.gov`. No API key is required; SEC guidelines require a declared `User-Agent` and cap request rates at 10 per second.
+Every input is a public SEC source, and there is no other. Filings, XBRL and the industry classification all come from EDGAR and its free APIs at `data.sec.gov` and `www.sec.gov`. No API key is required and no account is involved; SEC guidelines require a declared `User-Agent` and cap request rates at 10 per second, both enforced in [`src/basin/edgar/client.py`](src/basin/edgar/client.py) rather than at call sites.
 
-Industry classification comes from the Finviz Elite screener export API, which requires a paid account token. It is used only to decide cohort membership — no financial data is taken from it.
+This is deliberate. Basin previously took its industry classification from the Finviz Elite screener export, which classifies better than SIC but is a licensed feed: its terms do not contemplate redistributing the classification inside a product, and it was the single non-public dependency in an otherwise entirely public pipeline. Moving to SIC cost some precision and bought a supply chain with nothing in it that cannot be re-derived by anyone, from sources that are free to build on. See [`docs/commercial-compliance.md`](docs/commercial-compliance.md).

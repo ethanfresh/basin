@@ -71,6 +71,26 @@ class FactRow:
 
     extracted_by: str = "xbrl"
 
+    source_span: str | None = None
+    """The figure as the document prints it, verbatim.
+
+    Empty for XBRL rows, which identify the fact rather than matching text.
+    Rows read out of a table carry it, because for those the quote IS the
+    evidence: there is no tag standing behind the number.
+    """
+
+    section: str | None = None
+    """Where in the filing it was read — "Item 2", the reserve note."""
+
+    is_hedged: bool | None = None
+    """Whether a realized price includes commodity derivative settlements.
+
+    Only meaningful for ``average_sales_price``, and None where the filer does
+    not say. A panel that puts one company's hedged realized price beside
+    another's wellhead price is comparing two different quantities, so the
+    basis travels with the value rather than being inferred from the column.
+    """
+
     @property
     def is_duration(self) -> bool:
         """True for flow facts (production, capex); False for point-in-time."""

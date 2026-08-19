@@ -1,10 +1,13 @@
 """Does this filer actually produce oil, gas or NGL?
 
-Cohort membership comes from Finviz, and Finviz's classification is good but not
-clean. Two errors have already surfaced: MHM, a Bank of America structured note
-filed under Oil & Gas Equipment & Services, and TGS -- Transportadora de Gas del
-Sur, an Argentine pipeline operator that EDGAR registers as "GAS TRANSPORTER OF
-THE SOUTH INC." -- classified as Oil & Gas Integrated.
+Cohort membership is proposed by the SEC's SIC code, and a SIC code says what a
+filer registered as, not what it does. SIC 1311 holds operators, shells,
+midstream partnerships and -- observed in the population -- a biotechnology
+company, and TGS (Transportadora de Gas del Sur, an Argentine pipeline that
+EDGAR registers as "GAS TRANSPORTER OF THE SOUTH INC.") registers under an oil
+& gas code while owning no reserves at all.
+
+This module is what closes that gap. SIC proposes; reading the filing disposes.
 
 A misclassified filer is worse than an absent one. It sits in a reserves panel
 as a blank row, and a blank row reads as a coverage gap -- a company that failed

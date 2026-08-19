@@ -1,23 +1,30 @@
 """Enumerate SIC-coded filers and describe them from the submissions API.
 
 Cohort selection is a decision that has to be defensible, so it is driven by
-measured facts about each filer — when it last filed a 10-K, whether it files
-8-Ks, where it is domiciled — rather than by a hand-written list.
+measured facts about each filer — when it last filed an annual report, whether
+it files 8-Ks, where it is domiciled — rather than by a hand-written list.
 
-Two endpoints:
+Two endpoints, both free and unauthenticated:
 
-    /cgi-bin/browse-edgar?action=getcompany&SIC=####&type=10-K&output=atom
+    /cgi-bin/browse-edgar?action=getcompany&SIC=####&type=####&output=atom
         Paginated company search. Returns CIKs. NOTE: its ``name`` fields come
         back as ``ARRAY(0x...)`` — a long-standing SEC serialisation bug — so
         names must come from elsewhere.
 
     https://data.sec.gov/submissions/CIK##########.json
-        Everything else: name, tickers, SIC description, address, filing index.
+        Everything else: name, tickers, SIC, SIC description, address,
+        state of incorporation, filing index.
+
+The annual report is the gate, and "annual report" is three forms, not one.
+Filtering on 10-K alone would have discarded every foreign private issuer in
+the cohort — 20 of 91 members file 20-F or 40-F — which is the population most
+likely to be quietly lost, because it fails the filter silently.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from basin.edgar.client import SEC_DATA_HOST, SEC_WWW_HOST, EdgarClient, NotFound, cik_padded
@@ -26,30 +33,49 @@ _CIK_RE = re.compile(r"<cik>(\d+)</cik>")
 
 BROWSE_PAGE_SIZE = 100
 
+# The three annual reports that carry oil & gas disclosure. A domestic filer
+# files 10-K; a foreign private issuer files 20-F; a Canadian issuer under the
+# MJDS files 40-F. All three are "the annual report" for every purpose Basin
+# has, and only the first is a 10-K.
+ANNUAL_FORMS: tuple[str, ...] = ("10-K", "20-F", "40-F")
 
-def sic_ciks(client: EdgarClient, sic: str | int, *, form_type: str = "10-K") -> list[str]:
-    """Every CIK under *sic* that has filed *form_type*, in EDGAR's order.
 
-    Paginates until a page returns no CIK it has not already seen. EDGAR clamps
-    ``start`` past the end of the result set by repeating the final page rather
-    than returning an empty one, so "no new CIKs" is the reliable terminator.
+def sic_ciks(
+    client: EdgarClient,
+    sic: str | int,
+    *,
+    form_types: Sequence[str] = ANNUAL_FORMS,
+) -> list[str]:
+    """Every CIK under *sic* that has filed one of *form_types*.
+
+    One paginated sweep per form, unioned. Sweeping per form rather than with
+    no type filter at all is what keeps the result to filers that actually
+    report: an unfiltered SIC search returns every shell that ever registered.
+
+    Each sweep paginates until a page returns no CIK it has not already seen.
+    EDGAR clamps ``start`` past the end of the result set by repeating the final
+    page rather than returning an empty one, so "no new CIKs" is the reliable
+    terminator.
     """
     seen: dict[str, None] = {}
-    start = 0
 
-    while True:
-        url = (
-            f"{SEC_WWW_HOST}/cgi-bin/browse-edgar?action=getcompany&SIC={sic}"
-            f"&type={form_type}&dateb=&owner=include&count={BROWSE_PAGE_SIZE}"
-            f"&start={start}&output=atom"
-        )
-        page = _CIK_RE.findall(client.get_text(url))
-        fresh = [cik_padded(c) for c in page if cik_padded(c) not in seen]
-        if not fresh:
-            return list(seen)
-        for cik in fresh:
-            seen[cik] = None
-        start += BROWSE_PAGE_SIZE
+    for form_type in form_types:
+        start = 0
+        while True:
+            url = (
+                f"{SEC_WWW_HOST}/cgi-bin/browse-edgar?action=getcompany&SIC={sic}"
+                f"&type={form_type}&dateb=&owner=include&count={BROWSE_PAGE_SIZE}"
+                f"&start={start}&output=atom"
+            )
+            page = [cik_padded(c) for c in _CIK_RE.findall(client.get_text(url))]
+            fresh = [c for c in page if c not in seen]
+            if not fresh:
+                break
+            for cik in fresh:
+                seen[cik] = None
+            start += BROWSE_PAGE_SIZE
+
+    return list(seen)
 
 
 @dataclass(frozen=True)
@@ -68,9 +94,17 @@ class FilerProfile:
     state_or_country_description: str
     """EDGAR echoes the code itself for US states, and names foreign places."""
 
-    latest_10k_date: str | None
-    latest_10k_accession: str | None
-    tenk_count: int
+    incorporation: str
+    """EDGAR's state-of-incorporation code. Present for filers with no address."""
+
+    incorporation_description: str
+
+    latest_annual_date: str | None
+    latest_annual_accession: str | None
+    latest_annual_form: str | None
+    """Which of 10-K / 20-F / 40-F the most recent annual report was."""
+
+    annual_count: int
     eightk_count: int
     latest_8k_date: str | None
     former_names: tuple[str, ...] = ()
@@ -78,19 +112,57 @@ class FilerProfile:
 
     @property
     def is_foreign(self) -> bool:
-        """True when the business address is outside the US.
+        """True when the filer's address or incorporation is outside the US.
 
         EDGAR never writes "US". It puts the bare state code in both fields for
         a domestic filer ("TX" / "TX") and gives foreign codes a real
         description ("A0" / "Alberta, Canada"), so the two fields differing is
-        the signal. An unknown address is not treated as foreign.
+        the signal. Incorporation is the fallback because 8 of the 22
+        foreign-domiciled cohort members carry no business address at all. An
+        unknown filer is not treated as foreign.
         """
-        if not self.state_or_country:
-            return False
-        return self.state_or_country_description != self.state_or_country
+        for code, description in (
+            (self.state_or_country, self.state_or_country_description),
+            (self.incorporation, self.incorporation_description),
+        ):
+            if code:
+                return description != code
+        return False
 
-    def filed_10k_since(self, date: str) -> bool:
-        return bool(self.latest_10k_date and self.latest_10k_date >= date)
+    @property
+    def country(self) -> str | None:
+        """Domicile as a bare country name, or None when EDGAR does not say.
+
+        Advisory, not authoritative: it comes from a mailing address, and the
+        thing that actually decides whether the Facts layer can read a filer is
+        the annual form it files and the taxonomy it reports in, both of which
+        are measured elsewhere.
+
+        None rather than a guess when only a US state-of-incorporation code is
+        available and no address is: Shell plc is incorporated "DC" in EDGAR,
+        so falling back to it would assert a US domicile for a UK company.
+        """
+        if self.state_or_country:
+            if not self.is_foreign:
+                return "USA"
+            return _bare_country(self.state_or_country_description)
+        # No address. Incorporation only answers this when it is foreign.
+        if self.incorporation and self.incorporation_description != self.incorporation:
+            return _bare_country(self.incorporation_description)
+        return None
+
+    def filed_annual_since(self, date: str) -> bool:
+        return bool(self.latest_annual_date and self.latest_annual_date >= date)
+
+
+def _bare_country(description: str) -> str:
+    """"Alberta, Canada" -> "Canada"; "Norway" -> "Norway".
+
+    EDGAR qualifies Canadian provinces and a few other subdivisions with the
+    country after a comma. Only the country is wanted -- province is not a
+    distinction anything downstream makes.
+    """
+    return description.rsplit(",", 1)[-1].strip()
 
 
 def submissions_url(cik: int | str) -> str:
@@ -113,25 +185,29 @@ def profile_from_submissions(payload: dict) -> FilerProfile:
 
     Only the ``recent`` filing block is read. It covers roughly the last
     thousand filings, which is far more than enough to answer "has this filer
-    submitted a 10-K lately"; the older paginated blocks are not fetched
-    because nothing in cohort selection depends on deep history.
+    reported lately"; the older paginated blocks are not fetched because nothing
+    in cohort selection depends on deep history.
     """
     recent = payload.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
     dates = recent.get("filingDate", [])
     accessions = recent.get("accessionNumber", [])
 
-    tenk_dates: list[tuple[str, str]] = []
+    annuals: list[tuple[str, str, str]] = []
     eightk_dates: list[str] = []
     for i, form in enumerate(forms):
         date = dates[i] if i < len(dates) else ""
-        # Match 10-K and 10-K/A but not 10-KT or 10-Q.
-        if form == "10-K" or form.startswith("10-K/"):
-            tenk_dates.append((date, accessions[i] if i < len(accessions) else ""))
+        # Match a form and its amendments -- 10-K and 10-K/A -- but not the
+        # transition report 10-KT, which covers a stub period.
+        base = next(
+            (f for f in ANNUAL_FORMS if form == f or form.startswith(f + "/")), None
+        )
+        if base:
+            annuals.append((date, accessions[i] if i < len(accessions) else "", base))
         elif form == "8-K" or form.startswith("8-K/"):
             eightk_dates.append(date)
 
-    tenk_dates.sort()
+    annuals.sort()
     eightk_dates.sort()
 
     addresses = payload.get("addresses", {}) or {}
@@ -148,9 +224,12 @@ def profile_from_submissions(payload: dict) -> FilerProfile:
         sic_description=payload.get("sicDescription", ""),
         state_or_country=business.get("stateOrCountry", "") or "",
         state_or_country_description=business.get("stateOrCountryDescription", "") or "",
-        latest_10k_date=tenk_dates[-1][0] if tenk_dates else None,
-        latest_10k_accession=tenk_dates[-1][1] if tenk_dates else None,
-        tenk_count=len(tenk_dates),
+        incorporation=payload.get("stateOfIncorporation", "") or "",
+        incorporation_description=payload.get("stateOfIncorporationDescription", "") or "",
+        latest_annual_date=annuals[-1][0] if annuals else None,
+        latest_annual_accession=annuals[-1][1] if annuals else None,
+        latest_annual_form=annuals[-1][2] if annuals else None,
+        annual_count=len(annuals),
         eightk_count=len(eightk_dates),
         latest_8k_date=eightk_dates[-1] if eightk_dates else None,
         former_names=tuple(
@@ -249,7 +328,7 @@ def dedupe_issuers(profiles: list[FilerProfile]) -> list[IssuerGroup]:
     for root, members in grouped.items():
         # The issuer that is still filing is the one the cohort should track.
         members.sort(
-            key=lambda p: (p.latest_10k_date or "", p.tenk_count), reverse=True
+            key=lambda p: (p.latest_annual_date or "", p.annual_count), reverse=True
         )
         groups.append(
             IssuerGroup(
@@ -273,9 +352,12 @@ def _empty_profile(cik: str, error: str) -> FilerProfile:
         sic_description="",
         state_or_country="",
         state_or_country_description="",
-        latest_10k_date=None,
-        latest_10k_accession=None,
-        tenk_count=0,
+        incorporation="",
+        incorporation_description="",
+        latest_annual_date=None,
+        latest_annual_accession=None,
+        latest_annual_form=None,
+        annual_count=0,
         eightk_count=0,
         latest_8k_date=None,
         error=error,

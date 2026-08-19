@@ -9,3 +9,7 @@ __pycache__/
 data/
 *.db
 *.sqlite3
+
+# `data` is a symlink to a local store, so the `data/` rule above does not
+# match it — the trailing slash only matches real directories.
+data

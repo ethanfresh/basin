@@ -9,6 +9,14 @@ concept registry is applied to the payload locally rather than over the wire.
 Filings are registered from the facts themselves — each observation names the
 accession, form and filing date that produced it — so a fact can always be
 resolved back to a document without a second API call.
+
+The reserve family is chosen per filer by arithmetic (:mod:`basin.facts.valid\
+ation`) and applied per period. A tag whose meaning changed mid-history has no
+combination that is right for the whole of it, so the periods where the chosen
+combination fails developed + undeveloped = total are not written. Continental
+tags the total under ``ProvedUndevelopedReserveBOE1`` from FY2021 on, and the
+undeveloped figure under the tag named for the total; writing those five years
+put a 2.3x error in the panel where the identity had already said not to.
 """
 
 from __future__ import annotations
@@ -42,6 +50,55 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _drop_incoherent(rows, validation):
+    """Remove reserve rows for the periods the identity check rejected.
+
+    Scoped by tag, not merely by concept: the validator's verdict is about the
+    combination of tags it chose, so a row the payload carries under a
+    different alias was never tested and is not implicated. Scoped by period
+    for the same reason -- the same tag is correct for Continental's FY2013
+    through FY2020 and wrong afterwards, and dropping the filer's whole history
+    over five bad years would trade one wrong answer for eight missing ones.
+    """
+    if not validation.incoherent_period_ends:
+        return rows, 0
+    rejected = {
+        (key, taxonomy, tag)
+        for key, (taxonomy, tag) in validation.overrides.items()
+    }
+    kept = [
+        r for r in rows
+        if not (
+            (r.concept_key, r.taxonomy, r.tag) in rejected
+            and r.period_end in validation.incoherent_period_ends
+        )
+    ]
+    return kept, len(rows) - len(kept)
+
+
+def _prune_incoherent(conn, validation) -> int:
+    """Delete reserve rows a previous run wrote for periods now known bad.
+
+    Deliberately narrow: same filer, same concept, same tag, same rejected
+    period, and only rows the companyfacts path wrote. Inline-XBRL and
+    table-read rows for those periods are untouched — they are independent
+    readings, and in Continental's case they are the ones that close.
+    """
+    if not validation.incoherent_period_ends:
+        return 0
+    periods = sorted(validation.incoherent_period_ends)
+    removed = 0
+    for key, (taxonomy, tag) in validation.overrides.items():
+        cursor = conn.execute(
+            "DELETE FROM fact WHERE cik = ? AND concept_key = ? AND taxonomy = ? "
+            f"AND tag = ? AND extracted_by = 'xbrl' "
+            f"AND period_end IN ({','.join('?' * len(periods))})",
+            (validation.cik, key, taxonomy, tag, *periods),
+        )
+        removed += cursor.rowcount
+    return removed
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     forms = None if args.forms == "all" else tuple(args.forms.split(","))
@@ -68,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
                         unit_overrides=validation.unit_overrides,
                     )
                 )
+                rows, suppressed = _drop_incoherent(rows, validation)
+                # A row this run has just decided not to write, but a previous
+                # run did, is still in the store saying the wrong thing. The
+                # verdict has to reach the rows it invalidates, not only the
+                # ones it prevents.
+                pruned = _prune_incoherent(conn, validation)
                 upsert_company(conn, cik_padded(payload["cik"]), payload.get("entityName", ""))
 
                 # Register every filing the rows cite before writing the rows;
@@ -93,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"reserves:{mark}"
                     + (f" {validation.coherent_periods}/{validation.tested_periods}"
                        if validation.tested_periods else "")
+                    + (f"  −{suppressed} rows in "
+                       f"{len(validation.incoherent_period_ends)} bad period(s)"
+                       if suppressed else "")
+                    + (f", {pruned} previously stored removed" if pruned else "")
                 )
     except SECError as exc:
         print(f"error: {exc}", file=sys.stderr)

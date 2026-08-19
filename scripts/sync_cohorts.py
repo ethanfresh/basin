@@ -1,17 +1,25 @@
-"""Assign every producing energy filer to a cohort, from Finviz's classification.
+"""Assign every producing energy filer to a cohort, from the SEC's SIC codes.
 
 Cohort membership decides what a company can be compared against, so it has to
-come from a maintained classification rather than a guess. It previously came
-from matching substrings against company names, which cannot tell a royalty
-vehicle from an operator when the name does not say so.
+come from a maintained classification. It came from the Finviz Elite screener
+until that dependency was removed: Finviz classifies better than SIC, but it is
+a licensed feed whose terms do not permit redistributing the classification
+inside a product, and it was the only non-public source in the pipeline.
 
-Finviz supplies the industry; the SEC's company_tickers.json supplies the CIK
-that Basin actually keys on. Tickers that do not resolve to a CIK are reported,
-never dropped silently -- a filer Basin cannot reach is a coverage fact.
+EDGAR assigns every filer a SIC code and lets it be enumerated in reverse, which
+is what membership needs. ``basin.cohorts`` holds the code-to-cohort map, the
+thirteen filers whose code does not describe them, and the filers that sit in a
+producing code and produce nothing.
+
+SIC is coarser than Finviz, so the code proposes and the filing disposes: a
+candidate joins the cohort only when ``producer_check`` records that a filing
+was read and reserves were found. Candidates with no verdict are reported and
+held out, never admitted quietly -- SIC 1311 sweeps in shells, midstream
+partnerships, refiners and a biotechnology company.
 
     python scripts/sync_cohorts.py                 # report only
     python scripts/sync_cohorts.py --apply         # write companies + cohorts
-    python scripts/sync_cohorts.py --all-energy    # all 8, not just producers
+    python scripts/sync_cohorts.py --survey        # also list non-producing SIC
 """
 
 from __future__ import annotations
@@ -19,33 +27,25 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import sys
 from pathlib import Path
 
-import httpx
-
-from basin.edgar import EdgarClient
-from basin.edgar.tickers import fetch_ticker_map, primary_ticker
-from basin.finviz import (
-    ENERGY_COHORTS,
-    EXCLUDED_TICKERS,
-    PRODUCING_COHORTS,
-    ScreenerRow,
-    fetch_energy_cohorts,
+from basin.cohorts import EXCLUDED, NON_PRODUCING_SIC, cohort_for, is_operator, producing_sic
+from basin.edgar import EdgarClient, SECError
+from basin.edgar.tickers import primary_ticker
+from basin.edgar.discovery import (
+    FilerProfile,
+    dedupe_issuers,
+    fetch_profile,
+    sic_ciks,
 )
 from basin.store import DEFAULT_DB_PATH, connect
 from basin.store.db import upsert_company
 
-# Royalty, minerals and trust vehicles sit in the E&P industry but hold no
-# operations: they own an interest in production someone else lifts, so they
-# report no lifting cost and no capex. They stay in the cohort -- they are real
-# comparables for each other -- but the flag keeps them out of operator peer
-# tables, which is the distinction the README says coverage ranking gets wrong.
-NON_OPERATOR_HINTS = ("royalt", "minerals", "trust")
-
-
-def looks_like_operator(name: str) -> bool:
-    lowered = name.lower()
-    return not any(hint in lowered for hint in NON_OPERATOR_HINTS)
+# A filer that has not filed an annual report since this date is not a live
+# comparable, whatever its SIC still says. Deregistered shells keep their code
+# forever.
+DEFAULT_SINCE = "2025-01-01"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,11 +53,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--apply", action="store_true", help="write to the store")
     parser.add_argument(
-        "--all-energy", action="store_true",
-        help="all 8 energy industries, not only the producing ones",
+        "--since", default=DEFAULT_SINCE,
+        help="a filer is a candidate only if its latest 10-K, 20-F or 40-F is "
+             "on or after this date (default: %(default)s)",
     )
     parser.add_argument(
-        "--csv", type=Path, default=Path("data/finviz_cohorts.csv"),
+        "--survey", action="store_true",
+        help="also enumerate the non-producing oil & gas SIC codes, to show "
+             "what the producing filter is excluding",
+    )
+    parser.add_argument(
+        "--admit-unverified", action="store_true",
+        help="admit candidates with no recorded producer verdict. Off by "
+             "default: run scripts/check_producers.py instead",
+    )
+    parser.add_argument(
+        "--csv", type=Path, default=Path("data/sic_cohorts.csv"),
         help="where to save the pull, so the assignment is auditable later",
     )
     return parser.parse_args(argv)
@@ -65,52 +76,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    slugs = ENERGY_COHORTS if args.all_energy else PRODUCING_COHORTS
     as_of = dt.date.today().isoformat()
+    codes = producing_sic() + (tuple(NON_PRODUCING_SIC) if args.survey else ())
 
-    with httpx.Client(timeout=60.0) as http:
-        cohorts = fetch_energy_cohorts(http, slugs=slugs)
+    try:
+        profiles = _enumerate(codes, args.since)
+    except SECError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
-    rows: list[ScreenerRow] = []
-    for industry, members in cohorts.items():
-        kept = [r for r in members if r.ticker not in EXCLUDED_TICKERS]
-        dropped = len(members) - len(kept)
-        print(f"{industry:<32} {len(kept):>4}" + (f"  ({dropped} excluded)" if dropped else ""))
-        rows.extend(kept)
-    print(f"{'TOTAL':<32} {len(rows):>4}\n")
-
-    _write_csv(args.csv, rows, as_of)
-    print(f"saved {args.csv}")
-
-    with EdgarClient() as client:
-        ticker_map = fetch_ticker_map(client)
-    sec_by_ticker: dict[str, str] = {}
-    for cik, tickers in ticker_map.by_cik.items():
-        for ticker in tickers:
-            sec_by_ticker.setdefault(ticker, cik)
-
-    matched = [(r, sec_by_ticker[r.ticker]) for r in rows if r.ticker in sec_by_ticker]
-    unresolved = [r for r in rows if r.ticker not in sec_by_ticker]
-    resolved, collapsed = _collapse_share_classes(matched)
-
-    print(f"\nresolved {len(matched)} tickers -> {len(resolved)} issuers "
-          f"| unresolved {len(unresolved)}")
-    for r in unresolved:
-        print(f"  ? {r.ticker:<7} {r.company[:40]:<40} {r.country}")
-    for cik, kept, dropped in collapsed:
-        print(f"  = {kept:<7} absorbs {', '.join(dropped):<12} "
-              f"same filer, one CIK ({cik})")
+    # Collapse CIKs belonging to one issuer before anything counts them. A
+    # reorganisation gives a company a new CIK while the old one keeps its
+    # filing history, so a naive count holds the same issuer twice.
+    groups = dedupe_issuers(profiles)
+    for g in groups:
+        if g.superseded:
+            others = ", ".join(f"{p.cik} {p.name or '(no name)'}" for p in g.superseded)
+            print(f"  = {g.primary.cik} {g.primary.name[:36]:<36} absorbs {others}"
+                  f"  [{g.reason}]")
 
     conn = connect(args.db)
 
     # Follow a change of registrant before deciding anything about membership.
     #
-    # Finviz's XOM resolves to CIK 2115436, the successor registrant created by
+    # ExxonMobil Holdings (CIK 2115436) is the successor registrant created by
     # Exxon's 2026 redomiciliation. Every 10-K is on CIK 34088, which is where
     # the ticker and the facts live. Without this substitution the row holding
-    # the data looks like a company Finviz has never heard of, and the empty
-    # successor looks like the cohort member -- so the reconciliation below
-    # would drop the wrong one.
+    # the data looks like a company EDGAR has never classified, and the empty
+    # successor looks like the cohort member.
     superseded = {
         r["successor_cik"]: r["predecessor_cik"]
         for r in conn.execute(
@@ -118,66 +111,112 @@ def main(argv: list[str] | None = None) -> int:
             "WHERE status = 'resolved' AND predecessor_cik IS NOT NULL"
         )
     }
-    if superseded:
-        resolved = [(row, superseded.get(cik, cik)) for row, cik in resolved]
-        for successor, predecessor in superseded.items():
-            print(f"  ~ {successor} superseded; cohort follows the history to "
-                  f"{predecessor}")
 
     known = {cik for (cik,) in conn.execute("SELECT cik FROM company")}
-    new = [(r, c) for r, c in resolved if c not in known]
-    foreign = [(r, c) for r, c in resolved if not r.is_usa]
-    print(f"already in store {len(resolved) - len(new)} | new {len(new)} "
-          f"| foreign-domiciled {len(foreign)} (file 20-F/40-F, not 10-K)")
+    tickers = {
+        r["cik"]: r["ticker"] for r in conn.execute(
+            "SELECT cik, ticker FROM company WHERE ticker IS NOT NULL"
+        )
+    }
+    members = {
+        cik for (cik,) in conn.execute(
+            "SELECT cik FROM company WHERE cohort IS NOT NULL"
+        )
+    }
+    verdicts = {
+        r["cik"]: r["verdict"] for r in conn.execute(
+            "SELECT cik, verdict FROM producer_check"
+        )
+    }
 
-    # Reconcile, do not merely add. The cohort is defined as "the companies
-    # Finviz currently places in these industries", so a member that is no
-    # longer in the pull -- delisted, reclassified, or excluded on evidence --
-    # has to leave. Previously this script could only add, which meant a stale
-    # member stayed in every peer table indefinitely.
-    #
-    # Membership is cleared, never deleted. The facts, filings and citations
-    # stay exactly as they were: the store is append-only, and a company being
-    # out of scope is not a reason to destroy history that other rows cite.
-    member_ciks = {cik for _row, cik in resolved}
-    stale = conn.execute(
-        "SELECT cik, ticker, name, cohort FROM company "
-        "WHERE cohort IS NOT NULL ORDER BY cohort, ticker"
-    ).fetchall()
-    stale = [r for r in stale if r["cik"] not in member_ciks]
+    admitted: list[tuple[FilerProfile, str, str, str]] = []   # profile, cik, cohort, source
+    held: list[tuple[FilerProfile, str]] = []                 # profile, why
+    passed: list[tuple[FilerProfile, str]] = []
+
+    for group in groups:
+        p = group.primary
+        cik = superseded.get(p.cik, p.cik)
+        if cik != p.cik:
+            print(f"  ~ {p.cik} superseded; cohort follows the history to {cik}")
+
+        if cik in EXCLUDED:
+            passed.append((p, EXCLUDED[cik]))
+            continue
+
+        # Listing is tested here rather than during enumeration because a
+        # succession splits one issuer's identity across two CIKs. Exxon files
+        # every 10-K on CIK 34088 while the ticker sits on the 2026 successor
+        # registrant, so 34088 looks unlisted until the store is consulted.
+        if not (p.tickers or tickers.get(cik)):
+            passed.append((p, "no listed security"))
+            continue
+
+        cohort, source = cohort_for(p)
+        if cohort is None:
+            passed.append((p, source))
+            continue
+
+        # A verdict recorded against the CIK the facts live on, not the shell.
+        verdict = verdicts.get(cik) or verdicts.get(p.cik)
+        if verdict == "non-producer":
+            passed.append((p, "producer_check read the filing and found no reserves"))
+            continue
+        if verdict != "producer" and cik not in members and not args.admit_unverified:
+            held.append((p, f"no producer verdict ({verdict or 'never checked'})"))
+            continue
+
+        admitted.append((p, cik, cohort, source))
+
+    _report(admitted, held, passed, known, args)
+    _write_csv(args.csv, admitted, as_of)
+    print(f"\nsaved {args.csv}")
+
+    # Reconcile, do not merely add. The cohort is defined as "the filers EDGAR
+    # currently places in these SIC codes, whose filings show reserves", so a
+    # member that is no longer in the pull -- deregistered, reclassified, or
+    # excluded on evidence -- has to leave. Membership is cleared, never
+    # deleted: the facts, filings and citations stay exactly as they were.
+    member_ciks = {cik for _p, cik, _c, _s in admitted}
+    stale = [
+        r for r in conn.execute(
+            "SELECT cik, ticker, name, cohort FROM company "
+            "WHERE cohort IS NOT NULL ORDER BY cohort, ticker"
+        ) if r["cik"] not in member_ciks
+    ]
 
     def drop_reason(row) -> str:
-        ticker = (row["ticker"] or "").upper()
-        if ticker in EXCLUDED_TICKERS:
-            return EXCLUDED_TICKERS[ticker]
+        if row["cik"] in EXCLUDED:
+            return EXCLUDED[row["cik"]]
         if row["cik"] in superseded:
             return (f"superseded registrant; cohort membership follows the "
                     f"filing history to {superseded[row['cik']]}")
-        return "not in the current Finviz pull for these industries"
+        return "not in the current EDGAR pull for these SIC codes"
 
     if stale:
-        print(f"\nno longer in the Finviz {'/'.join(sorted(set(slugs.values())))} "
-              f"set -- {len(stale)} to drop:")
+        print(f"\nno longer in the SIC {'/'.join(producing_sic())} set "
+              f"-- {len(stale)} to drop:")
         for row in stale:
-            reason = drop_reason(row)
             print(f"  - {row['ticker'] or '-':<6} {row['name'][:40]:<40} {row['cohort']}")
-            print(f"         {reason[:96]}")
+            print(f"         {drop_reason(row)[:96]}")
 
     if not args.apply:
         print("\nreport only; pass --apply to write")
         return 0
 
     with conn:
-        for row, cik in resolved:
+        for p, cik, cohort, source in admitted:
             upsert_company(
-                conn, cik, row.company,
-                ticker=row.ticker,
-                is_operator=looks_like_operator(row.company),
-                cohort=row.industry,
-                cohort_source="finviz",
+                conn, cik, p.name,
+                # EDGAR lists every security on the registrant, so a filer can
+                # carry a warrant or a preferred class alongside its common.
+                # Petrobras files PBR and PBR-A against one CIK; labelling its
+                # facts with the preferred ADR would be wrong.
+                ticker=primary_ticker(list(p.tickers)),
+                is_operator=is_operator(p),
+                cohort=cohort,
+                cohort_source=source,
                 cohort_as_of=as_of,
-                country=row.country,
-                market_cap_musd=row.market_cap,
+                country=p.country,
             )
         for row in stale:
             conn.execute(
@@ -187,55 +226,101 @@ def main(argv: list[str] | None = None) -> int:
                  row["cik"]),
             )
 
-    print(f"\napplied: {len(resolved)} companies upserted with cohort as of "
+    print(f"\napplied: {len(admitted)} companies upserted with cohort as of "
           f"{as_of}, {len(stale)} dropped")
     return 0
 
 
-def _collapse_share_classes(
-    matched: list[tuple[ScreenerRow, str]]
-) -> tuple[list[tuple[ScreenerRow, str]], list[tuple[str, str, list[str]]]]:
-    """Reduce several listed share classes of one filer to a single company.
+def _enumerate(codes: tuple[str, ...], since: str) -> list[FilerProfile]:
+    """Every filer under *codes* that is still reporting, or has yet to start.
 
-    Petrobras lists common (PBR) and preferred (PBR-A) separately, and Finviz
-    screens them as two rows. They are one registrant with one CIK and one set
-    of filings, so ingesting both would upsert the same company twice and count
-    it twice in every cohort total. The common share class is kept.
+    A filer whose last annual report predates *since* is not a live comparable,
+    whatever its SIC still says -- a deregistered shell keeps its code forever.
+    A filer with no annual report at all is a different case and is kept: it is
+    a recent registrant that has not reached its first one, not a stale member,
+    and the producer check downstream is what decides whether it belongs. The
+    distinction matters because collapsing the two would quietly drop a company
+    for being new.
 
-    Reported rather than silently deduped: a ticker vanishing from a cohort
-    should be a line of output, not a discrepancy noticed later in a count.
+    Listing is not tested here. It is tested against the store in ``main``,
+    where a succession that splits a ticker from a filing history can be seen.
     """
-    groups: dict[str, list[ScreenerRow]] = {}
-    for row, cik in matched:
-        groups.setdefault(cik, []).append(row)
+    profiles: list[FilerProfile] = []
+    seen: set[str] = set()
 
-    kept: list[tuple[ScreenerRow, str]] = []
-    collapsed: list[tuple[str, str, list[str]]] = []
-    for cik, members in groups.items():
-        if len(members) == 1:
-            kept.append((members[0], cik))
-            continue
-        winner = primary_ticker([m.ticker for m in members])
-        chosen = next(m for m in members if m.ticker == winner)
-        kept.append((chosen, cik))
-        collapsed.append(
-            (cik, chosen.ticker, [m.ticker for m in members if m.ticker != winner])
-        )
-    return kept, collapsed
+    with EdgarClient() as client:
+        for sic in codes:
+            print(f"enumerating SIC {sic} filers with an annual report …")
+            ciks = [c for c in sic_ciks(client, sic) if c not in seen]
+            seen.update(ciks)
+            print(f"  {len(ciks)} CIKs")
+
+            kept = 0
+            for n, cik in enumerate(ciks, 1):
+                try:
+                    p = fetch_profile(client, cik)
+                except SECError as exc:
+                    print(f"  ! {cik}: {exc}", file=sys.stderr)
+                    continue
+                if p.filed_annual_since(since) or p.latest_annual_date is None:
+                    profiles.append(p)
+                    kept += 1
+                if n % 200 == 0:
+                    print(f"  profiled {n}/{len(ciks)}")
+            print(f"  {kept} reporting since {since}, or not yet reporting")
+
+    return profiles
 
 
-def _write_csv(path: Path, rows: list[ScreenerRow], as_of: str) -> None:
+def _report(admitted, held, passed, known, args) -> None:
+    new = [(p, cik) for p, cik, _c, _s in admitted if cik not in known]
+    foreign = [p for p, _cik, _c, _s in admitted if p.is_foreign]
+    overridden = [(p, c) for p, _cik, c, s in admitted if s == "sic-override"]
+
+    print(f"\n{'=' * 68}")
+    print(f"  admitted to a cohort                    {len(admitted):>5}")
+    print(f"    already in store                      {len(admitted) - len(new):>5}")
+    print(f"    new                                   {len(new):>5}")
+    print(f"    foreign-domiciled (20-F/40-F, not 10-K) {len(foreign):>3}")
+    print(f"    SIC overridden                        {len(overridden):>5}")
+    print(f"  held: no producer verdict yet           {len(held):>5}")
+    print(f"  passed over                             {len(passed):>5}")
+
+    if overridden:
+        print("\nEDGAR's SIC overridden:")
+        for p, cohort in overridden:
+            print(f"  {'|'.join(p.tickers)[:8]:<8} {p.name[:34]:<34} "
+                  f"SIC {p.sic} -> {cohort}")
+
+    if held:
+        print(f"\nheld out of the cohort -- SIC proposes them, no filing has "
+              f"confirmed reserves ({len(held)}):")
+        for p, why in sorted(held, key=lambda h: h[0].name):
+            print(f"  ? {'|'.join(p.tickers)[:8]:<8} {p.name[:38]:<38} "
+                  f"SIC {p.sic}  {why}")
+        print("\n  run: python scripts/check_producers.py --apply, then re-run "
+              "this script")
+
+    if args.survey:
+        print(f"\npassed over ({len(passed)}):")
+        for p, why in sorted(passed, key=lambda h: h[0].name):
+            print(f"  x {'|'.join(p.tickers)[:8]:<8} {p.name[:38]:<38} {why[:60]}")
+
+
+def _write_csv(path: Path, admitted, as_of: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(
-            ["ticker", "company", "sector", "industry", "country",
-             "market_cap_musd", "as_of"]
+            ["cik", "ticker", "name", "sic", "sic_description", "cohort",
+             "cohort_source", "country", "latest_annual_form",
+             "latest_annual_date", "as_of"]
         )
-        for r in rows:
+        for p, cik, cohort, source in sorted(admitted, key=lambda a: a[0].name):
             writer.writerow(
-                [r.ticker, r.company, r.sector, r.industry, r.country,
-                 r.market_cap, as_of]
+                [cik, "|".join(p.tickers), p.name, p.sic, p.sic_description,
+                 cohort, source, p.country or "", p.latest_annual_form or "",
+                 p.latest_annual_date or "", as_of]
             )
 
 

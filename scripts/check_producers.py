@@ -1,9 +1,13 @@
 """Test every cohort member against the one thing a producer cannot fake.
 
-Cohort membership is Finviz's classification, and it carries errors -- TGS, an
-Argentine gas pipeline, sits in Oil & Gas Integrated. A misclassified filer does
-not fail loudly; it shows up as a blank row in a reserves panel, which reads as
-a coverage gap rather than as a company with nothing to report.
+Cohort membership is proposed by the SEC's SIC code, which says what a filer
+registered as rather than what it does -- TGS, an Argentine gas pipeline, sits
+under an oil & gas code owning no reserves. A misclassified filer does not fail
+loudly; it shows up as a blank row in a reserves panel, which reads as a
+coverage gap rather than as a company with nothing to report.
+
+This script is the gate sync_cohorts.py reads: a candidate SIC proposes joins
+the cohort only once a verdict here says a filing was read and reserves found.
 
 Evidence, in order of cost: the reserve and production concepts a filer tags,
 then the reserve language in its annual report. Either confirms a producer.
