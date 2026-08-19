@@ -145,6 +145,26 @@ def api_panel(
         conn.close()
 
 
+@app.get("/api/panel-wide")
+def api_panel_wide(
+    period: str | None = None,
+    product: str | None = None,
+    cohort: str | None = None,
+) -> dict:
+    conn = _conn()
+    try:
+        # "latest" is a mode, not a period: each company's own most recent value
+        # for each concept. Passing None to the query means the same thing.
+        return queries.panel_wide(
+            conn,
+            None if period in (None, "", queries.LATEST_PERIOD) else period,
+            product,
+            cohort,
+        )
+    finally:
+        conn.close()
+
+
 @app.get("/api/cohorts")
 def api_cohorts() -> list[dict]:
     conn = _conn()

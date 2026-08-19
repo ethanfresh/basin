@@ -491,6 +491,40 @@
   .pip-title { font-size: 12.5px; color: var(--text); flex: 1; }
   .pip-title .sub { color: var(--dim); }
   .pip-toggle { font-size: 11px; padding: 3px 8px; }
+  .pip-select {
+    font-size: 11px; padding: 3px 22px 3px 8px; height: auto;
+    background-position: right 6px center;
+  }
+
+  /* ---- the wide panel ----
+     Nine metric columns, so ticker and company stay pinned while the metrics
+     scroll. Values are monospaced and right-aligned: this table is read down a
+     column as much as across a row. */
+  .sticky-col, .sticky-name {
+    position: sticky; left: 0; z-index: 2;
+    background: var(--panel);
+  }
+  /* Fixed, not minimum. With width:100% on the table the name column absorbs
+     every spare pixel and pushes nine metric columns off the right edge. */
+  .sticky-name { left: 66px; width: 200px; max-width: 200px; }
+  .sticky-name .name, td.sticky-name { overflow: hidden; text-overflow: ellipsis; }
+  /* The wide panel scrolls sideways rather than compressing; it is a table you
+     read across. */
+  #panel-table { width: auto; min-width: 100%; }
+  thead .sticky-col, thead .sticky-name { z-index: 3; background: #0b0b0b; }
+  .kpi-col { white-space: nowrap; min-width: 92px; }
+  th.kpi-col {
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    vertical-align: bottom; max-width: 96px; white-space: normal;
+  }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: var(--text); }
+  th.sorted { color: var(--accent); }
+  td.kpi-col .unit { color: var(--dim); font-size: 10px; margin-left: 4px; }
+  /* A cell with nothing in it and a cell whose magnitude could not be resolved
+     are different findings, so they get different marks rather than both
+     rendering as blank. */
+  td.empty-cell { color: var(--line); }
   .pip-close {
     background: none; border: 0; color: var(--muted);
     font-size: 13px; cursor: pointer; padding: 0 2px;
@@ -656,7 +690,6 @@
   <section id="view-panel">
     <div class="cohorts" id="cohort-filter" role="group" aria-label="Cohort"></div>
     <div class="controls">
-      <select id="concept"></select>
       <select id="period"></select>
       <select id="product"><option value="">All products</option></select>
       <label class="toggle" title="Rank every filer together, in BOE or USD, using magnitudes resolved against the filings">
@@ -712,6 +745,7 @@
   <div id="history" class="pip" hidden>
     <div class="pip-bar" id="history-bar">
       <span class="pip-title" id="history-title"></span>
+      <select id="history-concept" class="pip-select" title="Which metric to chart"></select>
       <label class="toggle pip-toggle" title="Plot resolved magnitudes in BOE or USD instead of the values as the filer tagged them">
         <input type="checkbox" id="history-normalize"> Normalize
       </label>
@@ -913,31 +947,10 @@ function periodCell(r) {
   return `${esc(r.period_end)}${stale}`;
 }
 
-// Which KPIs each filer has. Loaded once per cohort, not per panel render.
-let kpiIndex = {};
-
-async function loadKpiIndex() {
-  kpiIndex = await api(`/api/kpis${cohort ? `?cohort=${encodeURIComponent(cohort)}` : ""}`);
-}
-
-// One pip per metric, always in the same order, filled when the filer reports
-// it. The pip for the metric currently on screen is outlined, so the column
-// reads as "here is where you are, and here is what else this filer has".
-function kpiCell(r) {
-  const have = new Set(kpiIndex[r.cik] || []);
-  const current = $("#concept").value;
-  const pips = concepts.map((c) => {
-    const on = have.has(c.key);
-    return `<span class="kpi-pip${on ? " on" : ""}${c.key === current ? " here" : ""}"
-      data-concept="${esc(c.key)}"
-      title="${esc(c.label)} — ${on ? "reported" : "not reported"}${on ? "\nClick to show this metric" : ""}"></span>`;
-  }).join("");
-  return `${pips}<span class="kpi-count">${have.size}/${concepts.length}</span>`;
-}
-
 // ---- reported history (floating window) ----
 
 let historyData = null;
+let historyCik = null;
 
 // Re-group the points for the normalized view.
 //
@@ -990,8 +1003,12 @@ function renderHistory() {
   drawHistory({ ...historyData, series: view.series, periods });
 }
 
-async function openHistory(cik) {
-  const concept = $("#concept").value;
+async function openHistory(cik, concept = null) {
+  // Falls back to whatever this filer reports most, so opening the window from
+  // a company name lands on a series that exists rather than on an empty chart.
+  concept = concept || $("#history-concept").value || concepts[0]?.key;
+  $("#history-concept").value = concept;
+  historyCik = cik;
   const product = $("#product").value;
   const data = await api(
     `/api/history?cik=${encodeURIComponent(cik)}&concept=${encodeURIComponent(concept)}` +
@@ -1111,7 +1128,7 @@ let cohortRows = [];
 // discrepancy this filter exists to remove, and two independent pickers would
 // reintroduce it a click later.
 const COHORT_FILTERS = {
-  "#cohort-filter": () => loadKpiIndex().then(loadPanel),
+  "#cohort-filter": () => loadPanel(),
   "#coverage-cohort-filter": () => loadCoverage(),
 };
 
@@ -1159,15 +1176,16 @@ async function loadCohorts() {
 }
 
 async function loadConcepts() {
+  // Concepts are columns now, not a selection. The list is still needed for
+  // labels, for the history window's picker, and for column order.
   concepts = await api("/api/concepts");
-  $("#concept").innerHTML = concepts
-    .map((c) => `<option value="${c.key}">${esc(c.label)}</option>`)
-    .join("");
+  $("#history-concept").innerHTML = concepts
+    .map((c) => `<option value="${c.key}">${esc(c.label)}</option>`).join("");
   await loadPeriods();
 }
 
 async function loadPeriods() {
-  const periods = await api(`/api/periods?concept=${$("#concept").value}`);
+  const periods = await api("/api/periods");
   // Default to each company's own latest rather than to the newest period in
   // the store. The newest period is usually one off-cycle filer's quarter --
   // the panel used to open on 2026-03-31 showing a single company.
@@ -1178,145 +1196,121 @@ async function loadPeriods() {
 }
 
 async function loadPanel() {
-  const concept = $("#concept").value;
   const period = $("#period").value;
   const product = $("#product").value;
-  if (!concept || !period) return;
 
-  const rows = await api(
-    `/api/panel?concept=${encodeURIComponent(concept)}&period=${encodeURIComponent(period)}` +
+  const data = await api(
+    `/api/panel-wide?period=${encodeURIComponent(period || "latest")}` +
     (product ? `&product=${encodeURIComponent(product)}` : "") +
     (cohort ? `&cohort=${encodeURIComponent(cohort)}` : "")
   );
+  panelData = data;
 
-  // Repopulate the product filter from what this concept actually has.
-  const products = [...new Set(rows.map((r) => r.product).filter(Boolean))];
+  // Repopulate the product filter from what these rows actually carry.
+  const products = [...new Set(data.rows.map((r) => r.product).filter(Boolean))];
   const keep = $("#product").value;
   $("#product").innerHTML =
     `<option value="">All products</option>` +
     products.map((p) => `<option value="${p}"${p === keep ? " selected" : ""}>${p}</option>`).join("");
-  $("#product").parentElement && ($("#product").hidden = products.length === 0 && !keep);
+  $("#product").hidden = products.length === 0 && !keep;
 
-  if (!rows.length) {
+  renderPanel();
+}
+
+// Which column the table is ordered by, and in which direction. Null means the
+// query's own order: most concepts filled first, then ticker.
+let sortColumn = null;
+let sortDesc = true;
+let panelData = null;
+
+function renderPanel() {
+  const data = panelData;
+  if (!data) return;
+  const normalized = $("#normalize").checked;
+  const labels = Object.fromEntries(concepts.map((c) => [c.key, c.label]));
+
+  if (!data.rows.length) {
     $("#panel-warning").hidden = true;
     $("#panel-table").innerHTML =
-      `<tbody><tr><td class="empty">No data for this period.</td></tr></tbody>`;
+      `<tbody><tr><td class="empty">No data for this selection.</td></tr></tbody>`;
     return;
   }
 
-  const normalized = $("#normalize").checked;
+  // A column can only be ranked when its values share a scale. Normalized, the
+  // resolved magnitude supplies one. As filed, only a column whose filers all
+  // chose the same unit can be ordered without asserting a comparison that does
+  // not hold -- and most cannot: proved reserves arrive in fourteen units.
+  const rankable = (key) =>
+    normalized || (data.column_units[key] || []).length <= 1;
 
-  // Normalised: one group per canonical unit, plus everything whose magnitude
-  // could not be resolved -- kept visible, but never ranked alongside.
-  // Otherwise: one group per declared unit, which is as far as comparison goes.
-  const groups = {};
-  if (normalized) {
-    for (const r of rows) {
-      const key = r.canonical_value == null ? "\u0000unresolved" : r.canonical_unit;
-      (groups[key] ??= []).push(r);
-    }
-    for (const k of Object.keys(groups)) {
-      groups[k] = clusterByCompany(groups[k], (r) => r.canonical_value ?? -1);
-    }
-  } else {
-    for (const r of rows) (groups[r.unit] ??= []).push(r);
-    // The API already returns this order; redoing it here keeps the two views
-    // identical rather than subtly divergent when one of them changes.
-    for (const k of Object.keys(groups)) {
-      groups[k] = clusterByCompany(groups[k], (r) => r.value ?? -1);
-    }
+  const cellValue = (row, key) => {
+    const cell = row.cells[key];
+    if (!cell) return null;
+    return normalized ? cell.canonical_value : cell.value;
+  };
+
+  let rows = data.rows.slice();
+  if (sortColumn) {
+    rows.sort((a, b) => {
+      const av = cellValue(a, sortColumn), bv = cellValue(b, sortColumn);
+      // Rows with nothing in the sorted column go last either way; they are not
+      // small, they are absent.
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return sortDesc ? bv - av : av - bv;
+    });
   }
-  const units = Object.keys(groups).sort((a, b) => {
-    if (a.startsWith("\u0000")) return 1;
-    if (b.startsWith("\u0000")) return -1;
-    return groups[b].length - groups[a].length;
-  });
 
-  // Two different reasons a concept can span units, needing two different
-  // caveats. Rate units ("USD/bbl") differ because they measure different
-  // things; volume units differ because filers scale their values
-  // inconsistently against the label. Saying the wrong one would be worse
-  // than saying nothing.
-  const isRate = units.every((u) => u.includes("/"));
-  $("#panel-warning").hidden = units.length < 2 || normalized;
-  if (units.length > 1 && !normalized) {
-    $("#panel-warning-summary").innerHTML = isRate
-      ? `Quoted against ${units.length} different denominators — compared within each only`
-      : `Declared in ${units.length} different units — ranked within each only`;
-    $("#panel-warning-body").innerHTML = isRate
-      ? `Values here are quoted against different denominators (<em>${units.map(esc).join("</em>, <em>")}</em>),
-         which measure different things rather than the same thing at different scales. Converting
-         between them requires a heat-content assumption that varies by filer and period, so rows are
-         grouped by denominator and compared only against like-quoted peers.`
-      : `Filers declare this concept in more than one unit (<em>${units.map(esc).join("</em>, <em>")}</em>),
-         and they disagree about whether the value already has the unit's prefix applied — Diamondback
-         reports base units under an <em>MBoe</em> label while Devon scales its value to match
-         <em>MMcfe</em>. Magnitude therefore cannot be derived from value and unit alone, so rows are
-         grouped and ranked only against like-declared peers. Cross-unit normalisation needs
-         per-filer calibration and is not applied here.`;
+  const mixed = data.concept_keys.filter((k) => (data.column_units[k] || []).length > 1);
+  if (mixed.length && !normalized) {
+    $("#panel-warning").hidden = false;
+    $("#panel-warning-summary").textContent =
+      `${mixed.length} of ${data.concept_keys.length} columns span more than one declared unit`;
+    $("#panel-warning-body").innerHTML =
+      `<p>Filers choose their own units, and most of these columns hold several. `
+      + `Every cell states its own, and those columns cannot be ranked as filed — `
+      + `turn on <strong>Normalize</strong> to sort them on resolved magnitudes.</p>`
+      + `<ul>${mixed.map((k) =>
+          `<li>${esc(labels[k] || k)} — ${data.column_units[k].join(", ")}</li>`).join("")}</ul>`;
+  } else {
+    $("#panel-warning").hidden = true;
   }
 
   const header = `
     <thead><tr>
-      <th style="width:72px">Ticker</th>
-      <th>Company</th>
-      <th class="col-kpis" title="Which other metrics this filer reports">KPIs</th>
-      <th class="num">Value</th>
-      <th>Period</th>
-      <th class="bar-cell col-bar"></th>
+      <th class="sticky-col" style="width:66px">Ticker</th>
+      <th class="sticky-name">Company</th>
       <th class="col-product">Product</th>
-      <th class="col-basis">Basis</th>
-      <th>Source</th>
-      <th>Verified</th>
-      <th class="col-tag">XBRL tag</th>
+      ${data.concept_keys.map((k) => {
+        const can = rankable(k);
+        const units = (data.column_units[k] || []).join(", ");
+        const arrow = sortColumn === k ? (sortDesc ? " ↓" : " ↑") : "";
+        return `<th class="kpi-col num${can ? " sortable" : ""}${sortColumn === k ? " sorted" : ""}"
+          ${can ? `data-sort="${esc(k)}"` : ""}
+          title="${esc(labels[k] || k)}${units ? `\nunits: ${units}` : ""}${
+            can ? "\n\nClick to sort" : "\n\nSpans several units — not rankable as filed"}"
+          >${SHORT_LABEL[k] || esc(labels[k] || k)}${arrow}</th>`;
+      }).join("")}
     </tr></thead>`;
 
-  const body = units.map((unit) => {
-    const group = groups[unit];
-    const unresolved = unit.startsWith("\u0000");
-    const magnitude = (r) => Math.abs(normalized && !unresolved ? r.canonical_value : r.value);
-    const max = Math.max(...group.map(magnitude));
-    const label = unresolved ? "not comparable" : unit;
-    const caption = unresolved
-      ? `${group.length} ${group.length === 1 ? "company" : "companies"} · magnitude not resolved against the filing, so not ranked`
-      : normalized
-        ? `${group.length} ${group.length === 1 ? "company" : "companies"} · ranked across every filer`
-        : `${group.length} ${group.length === 1 ? "company" : "companies"} · comparable within this group only`;
-    const groupHeader = units.length > 1
-      ? `<tr class="group"><td colspan="11">
-           <span class="group-unit">${esc(label)}</span>
-           <span class="group-count">${caption}</span>
-         </td></tr>`
-      : "";
-    return groupHeader + group.map((r) => `
-      <tr data-cik="${esc(r.cik)}">
-        <td class="ticker history-open" title="Reported history">${esc(r.ticker || "—")}</td>
-        <td class="name history-open" title="Reported history">${esc(r.name)}${reportingTags(r)}<span class="cik">${esc(r.cik)}</span></td>
-        <td class="col-kpis">${kpiCell(r)}</td>
-        <td class="num">${normalized && r.canonical_value != null
-            ? `<span class="value">${fmt(r.canonical_value, r.canonical_unit)}</span><span class="unit">${esc(r.canonical_unit)}</span>`
-              + `<span class="asfiled">filed as ${fmt(r.value, r.unit)} ${esc(r.unit)}</span>`
-            : `<span class="value">${fmt(r.value, r.unit)}</span><span class="unit">${esc(r.unit)}</span>`}</td>
-        <td class="period">${periodCell(r)}</td>
-        <td class="bar-cell col-bar"><div class="bar-track"><div class="bar" style="width:${(magnitude(r) / max) * 100}%"></div></div></td>
-        <td class="col-product">${r.product ? `<span class="tag product">${esc(r.product)}</span>` : `<span class="sub">—</span>`}</td>
-        <td class="col-basis">${basisCell(r, normalized) || (r.unit_changed
-              ? `<span class="tag warn" title="This filer changed the declared unit mid-series: ${esc(r.series_units)}">unit changed</span>`
-              : `<span class="sub">—</span>`)}</td>
-        <td><a class="cite" href="https://www.sec.gov/Archives/edgar/data/${parseInt(r.cik, 10)}/${r.accession.replace(/-/g, "")}/${r.accession}-index.htm"
-               target="_blank" rel="noopener"
-               title="${esc(r.form)} filed ${esc(r.filed_date)}">${esc(r.accession)}</a></td>
-        <td>${verifyCell(r)}</td>
-        <td class="col-tag"><span class="sub">${esc(r.taxonomy)}:${esc(r.tag)}</span></td>
-      </tr>`).join("");
-  }).join("");
+  const body = rows.map((r) => `
+    <tr data-cik="${esc(r.cik)}">
+      <td class="ticker sticky-col history-open" title="Reported history">${esc(r.ticker || "—")}</td>
+      <td class="name sticky-name history-open" title="Reported history">${esc(r.name)}${reportingTags(r)}</td>
+      <td class="col-product">${r.product
+          ? `<span class="tag product">${esc(r.product)}</span>`
+          : `<span class="sub">—</span>`}</td>
+      ${data.concept_keys.map((k) => wideCell(r, k, normalized)).join("")}
+    </tr>`).join("");
 
   $("#panel-table").innerHTML = header + `<tbody>${body}</tbody>`;
-  $("#panel-table").querySelectorAll(".kpi-pip.on").forEach((el) =>
-    el.addEventListener("click", (e) => {
-      e.stopPropagation();
-      $("#concept").value = el.dataset.concept;
-      loadPeriods();
+
+  $("#panel-table").querySelectorAll("th.sortable").forEach((th) =>
+    th.addEventListener("click", () => {
+      if (sortColumn === th.dataset.sort) sortDesc = !sortDesc;
+      else { sortColumn = th.dataset.sort; sortDesc = true; }
+      renderPanel();
     }));
 
   $("#panel-table").querySelectorAll(".history-open").forEach((el) =>
@@ -1324,6 +1318,29 @@ async function loadPanel() {
 
   $("#panel-table").querySelectorAll(".cite-open-btn").forEach((el) =>
     el.addEventListener("click", () => openCitation(el.dataset.fact)));
+}
+
+// One cell: the value as filed, or the resolved magnitude when normalizing.
+//
+// The unit travels with the number rather than sitting in a column header,
+// because in this table it genuinely varies row to row -- two filers' proved
+// reserves in the same column can be MBoe and Bcfe.
+function wideCell(row, key, normalized) {
+  const cell = row.cells[key];
+  if (!cell) return `<td class="kpi-col num empty-cell">·</td>`;
+
+  const value = normalized ? cell.canonical_value : cell.value;
+  const unit = normalized ? cell.canonical_unit : cell.unit;
+  if (value == null) {
+    return `<td class="kpi-col num empty-cell" title="Reported ${esc(cell.value)} ${esc(cell.unit)}, magnitude not resolved against the filing">~</td>`;
+  }
+  const title = `${esc(cell.tag)}\n${esc(cell.period_end)} · ${esc(cell.form)} ${esc(cell.accession)}`
+    + `${cell.verified ? "\nverified in the filing" : "\nnot located in the filing"}`
+    + `\n\nClick to validate against the filing.`;
+  return `<td class="kpi-col num">
+    <span class="cite-open-btn ${cell.verified ? "ok" : "warn"}" data-fact="${cell.fact_id}" title="${title}">
+      ${fmtCompact(value)}<span class="unit">${esc(unit || "")}</span>
+    </span></td>`;
 }
 
 // ---- coverage ----
@@ -1680,7 +1697,9 @@ document.querySelectorAll("nav button").forEach((btn) =>
 // The wordmark is the way home, as it is on any other site.
 $("#home").addEventListener("click", () => showView("panel"));
 
-$("#concept").addEventListener("change", loadPeriods);
+$("#history-concept").addEventListener("change", () => {
+  if (historyCik) openHistory(historyCik, $("#history-concept").value);
+});
 $("#period").addEventListener("change", loadPanel);
 $("#product").addEventListener("change", loadPanel);
 $("#normalize").addEventListener("change", loadPanel);
@@ -1707,7 +1726,7 @@ $("#stats-wrap").hidden = true;
 // Stats after cohorts, not alongside: loadCohorts picks the default cohort, and
 // counting before it is chosen would render store-wide totals under a caption
 // claiming they describe a cohort.
-loadCohorts().then(loadStats).then(loadKpiIndex).then(loadConcepts);
+loadCohorts().then(loadStats).then(loadConcepts);
 </script>
 </body>
 </html>

@@ -316,6 +316,117 @@ def _years_behind(period_end: str | None, newest: str | None) -> int | None:
     return int(newest[:4]) - int(period_end[:4])
 
 
+def panel_wide(
+    conn: sqlite3.Connection,
+    period_end: str | None = None,
+    product: str | None = None,
+    cohort: str | None = None,
+) -> dict[str, Any]:
+    """The consolidated panel: one row per company and product, one column per KPI.
+
+    This is the shape the product is named for -- everything a filer reports,
+    side by side, rather than one metric at a time.
+
+    Rows are keyed by ``(company, product)`` rather than by company alone. XBRL
+    dimensions reserves and realized price by oil, gas and NGL and the
+    companyfacts API flattens the dimension away, so a filer legitimately holds
+    several values for one concept. Collapsing them into one cell would either
+    drop data or invent a total the filer never reported; a row per product
+    keeps every value visible and every cell single-valued.
+
+    ``period_end`` of None means each company's own latest for each concept,
+    which is what makes the table dense: fiscal years do not align and filers
+    stop tagging concepts at different times, so any single period leaves large
+    holes that are an artifact of the filter rather than of the disclosure.
+
+    No cross-company ranking is applied. A row set spans nine concepts in
+    however many units their filers chose, and there is no single column the
+    whole table can be ordered by without asserting a comparison that does not
+    hold. Sorting is the caller's decision, per column, and the unit count on
+    each column is returned so the caller can refuse when it would be a lie.
+    """
+    concept_keys = [c["key"] for c in concepts(conn)]
+
+    sql = """
+        WITH ranked AS (
+            SELECT f.*, ROW_NUMBER() OVER (
+                       PARTITION BY f.cik, f.concept_key, COALESCE(f.product, '')
+                       ORDER BY f.period_end DESC
+                   ) AS recency
+            FROM fact_current f
+            {period_filter}
+        )
+        SELECT r.id, r.cik, c.name, c.ticker, c.cohort,
+               c.reporting_taxonomy, c.disclosure_regime, c.regime_note,
+               r.concept_key, r.value, r.unit, r.product, r.period_end,
+               r.accession, r.form, r.taxonomy, r.tag,
+               v.status AS verify_status,
+               sc.canonical_value, sc.canonical_unit
+        FROM ranked r
+        JOIN company c ON c.cik = r.cik
+        LEFT JOIN fact_verification v ON v.fact_id = r.id
+        LEFT JOIN fact_scale sc ON sc.fact_id = r.id
+        WHERE r.recency = 1
+    """
+    params: tuple = ()
+    if period_end:
+        sql = sql.format(period_filter="WHERE f.period_end = ?")
+        params += (period_end,)
+    else:
+        sql = sql.format(period_filter="")
+    if product:
+        sql += " AND COALESCE(r.product, '') = ?"
+        params += (product,)
+    if cohort:
+        sql += " AND c.cohort = ?"
+        params += (cohort,)
+
+    rows = _rows(conn, sql, params)
+
+    by_row: dict[tuple[str, str], dict[str, Any]] = {}
+    units: dict[str, set[str]] = {k: set() for k in concept_keys}
+    for row in rows:
+        key = (row["cik"], row["product"] or "")
+        entry = by_row.setdefault(key, {
+            "cik": row["cik"],
+            "name": row["name"],
+            "ticker": row["ticker"],
+            "cohort": row["cohort"],
+            "reporting_taxonomy": row["reporting_taxonomy"],
+            "disclosure_regime": row["disclosure_regime"],
+            "regime_note": row["regime_note"],
+            "product": row["product"],
+            "cells": {},
+        })
+        entry["cells"][row["concept_key"]] = {
+            "fact_id": row["id"],
+            "value": row["value"],
+            "unit": row["unit"],
+            "period_end": row["period_end"],
+            "accession": row["accession"],
+            "form": row["form"],
+            "tag": f'{row["taxonomy"]}:{row["tag"]}',
+            "verified": row["verify_status"] == "found",
+            "canonical_value": row["canonical_value"],
+            "canonical_unit": row["canonical_unit"],
+            "filing_url": filing_url(row["cik"], row["accession"]),
+        }
+        units[row["concept_key"]].add(row["unit"])
+
+    out = sorted(
+        by_row.values(),
+        key=lambda r: (-len(r["cells"]), r["ticker"] or "zzz", r["product"] or ""),
+    )
+    return {
+        "concept_keys": concept_keys,
+        # How many declared units each column spans. A column with one unit can
+        # be ranked; a column with several cannot, and the caller is told which
+        # rather than left to find out.
+        "column_units": {k: sorted(v) for k, v in units.items()},
+        "rows": out,
+    }
+
+
 def unit_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Split panel rows into like-for-like groups, one per declared unit.
 
