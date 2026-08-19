@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS company (
     -- Canadian NI 51-101, where reserves use forecast prices, the headline is
     -- 2P rather than proved, and values are pre-tax. Shell is IFRS and
     -- comparable; Cenovus is IFRS and not. One field could not say that.
+    -- Why a filer is or is not eligible for a cohort.
+    --
+    -- Cohort membership is sourced from a screener, and a screener lists traded
+    -- securities. Scope is deliberately traded US securities for now -- but the
+    -- boundary that draws is not "these companies do not matter", it is "these
+    -- companies are not reachable this way", and the difference has to be
+    -- visible. Continental Resources went private in 2022 and still files 10-Ks
+    -- against public debt; Energy 11 and Energy Resources 12 are non-traded
+    -- partnerships that file every year. They are producers, they are current,
+    -- and no screener will ever return them.
+    --
+    --   listed      -- currently traded; eligible for a cohort
+    --   not-listed  -- files with the SEC, no live listing. Out of scope, not
+    --                 out of interest: recorded so the gap can be measured and
+    --                 closed deliberately rather than discovered later
+    --   superseded  -- a registrant replaced by a successor; see
+    --                 registrant_succession. Not a company, a duplicate of one
+    listing_status  TEXT,
+    last_filing_date TEXT,               -- most recent filing of any form
+    listing_note    TEXT,
+
     reporting_taxonomy TEXT,             -- 'us-gaap' | 'ifrs-full' | 'unknown'
     taxonomy_note      TEXT,             -- namespace tag counts behind the call
     disclosure_regime  TEXT,             -- 'subpart-1200' | 'ni-51-101'

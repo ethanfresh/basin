@@ -440,12 +440,34 @@ def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
         """,
     )
 
+    # Producers the current scope cannot reach.
+    #
+    # This is a gap in the dataset, so it belongs beside the other things the
+    # store knows are wrong with it -- not buried in a column nobody queries.
+    # Scope is traded US securities and stays that way; what is not acceptable
+    # is the exclusion being invisible.
+    unreached = _rows(
+        conn,
+        """
+        SELECT c.cik, c.name, c.last_filing_date, c.listing_note,
+               COUNT(DISTINCT f.concept_key) AS concepts,
+               MAX(f.period_end) AS latest_period
+        FROM company c
+        JOIN fact f ON f.cik = c.cik
+        WHERE c.listing_status = 'not-listed'
+        GROUP BY c.cik
+        HAVING concepts > 0
+        ORDER BY c.last_filing_date DESC
+        """,
+    )
+
     return {
         "alias_validation": alias_validation,
         "unit_discontinuities": discontinuities,
         "collisions": collisions,
         "fallback_tags": fallback_tags,
         "reserve_issues": reserve_issues,
+        "unreached": unreached,
     }
 
 

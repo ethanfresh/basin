@@ -113,7 +113,27 @@ A CIK is assigned once and never reused. A ticker is released when a company del
 
 `NULL` is meaningful: it means the filer has no current listing, not that the ticker is unknown. **14 companies in the store are in that state** — taken private, acquired, or delisted — and they still file, still carry facts, and still have to be citable. Continental Resources went private in 2022 and keeps filing 10-Ks because of its public debt.
 
-> **A known limitation follows from this.** Cohort membership comes from a screener, and a screener lists traded securities, so every one of those 14 is outside the cohort by construction — including producers that still file. Defining the cohort from a classification is a large improvement on guessing from names, and it draws this boundary as a side effect. Closing it means adding a second membership path for filers with no listing, which is not built.
+### Scope: traded US securities
+
+Basin covers **traded US securities**, and cohort membership comes from a screener, so a producer with no live listing is excluded automatically. That is a deliberate scope decision. What is not acceptable is the exclusion being invisible, so every filer in the store carries a `listing_status` — `listed`, `not-listed`, or `superseded` — with the date it last filed.
+
+**Nine producers currently sit outside that boundary, and every one of them is still filing:**
+
+| Company | KPIs | Last filed |
+|---|---|---|
+| Energy 11, L.P. | 7 | 2026-08-12 |
+| Energy Resources 12, L.P. | 6 | 2026-08-12 |
+| Everflow Eastern Partners LP | 4 | 2026-08-11 |
+| Continental Resources | 7 | 2026-07-31 |
+| Coterra Energy | 7 | 2026-06-05 |
+| Civitas Resources | 7 | 2026-02-17 |
+| Vital Energy | 7 | 2025-12-29 |
+| Sitio Royalties | 7 | 2025-11-13 |
+| PHX Minerals | 6 | 2025-08-14 |
+
+Continental went private in 2022 and still files 10-Ks against its public debt. Energy 11 and Energy Resources 12 are non-traded partnerships that file every year. Their facts are already in the store — they are simply not in a cohort, and so never in a peer table.
+
+The **Data quality** view lists them, because a gap in the dataset belongs beside the other things the store knows are wrong with it rather than buried in a column nobody queries. Closing the gap means a second membership path for filers with no listing, which is not built and not currently planned.
 
 ### Following a change of registrant
 

@@ -725,6 +725,18 @@
       What the dataset knows is questionable about itself. None of this is corrected silently:
       rewriting a filer's own disclosure would be worse than reporting it with the caveat attached.
     </p>
+    <h2>Producers this scope cannot reach</h2>
+    <p class="note">
+      Basin covers <strong>traded US securities</strong>, and cohort membership comes from a
+      screener, so a producer with no live listing is excluded automatically. That is a
+      deliberate scope decision and it draws a real boundary: these filers report to the SEC
+      every year and no screener will ever return them. Continental Resources went private in
+      2022 and still files 10-Ks against its public debt; Energy 11 and Energy Resources 12 are
+      non-traded partnerships. Their facts are already in the store — they are simply not in a
+      cohort, and so never in a peer table.
+    </p>
+    <div class="scroll"><table id="unreached-table"></table></div>
+
     <h2>Alias choices that stopped holding</h2>
     <p class="note">
       Which XBRL tag a filer means by "total proved reserves" is chosen by measurement, not by a
@@ -1326,6 +1338,21 @@ async function loadCompanies() {
 async function loadQuality() {
   const data = await api("/api/quality");
   const labels = Object.fromEntries(concepts.map((c) => [c.key, c.label]));
+
+  $("#unreached-table").innerHTML = data.unreached.length ? `
+    <thead><tr>
+      <th>Company</th><th class="num">KPIs</th><th>Latest period</th>
+      <th>Last filed</th><th>Why it is out of scope</th>
+    </tr></thead>
+    <tbody>${data.unreached.map((r) => `
+      <tr>
+        <td class="name">${esc(r.name)}<span class="cik">${esc(r.cik)}</span></td>
+        <td class="num"><span class="value">${r.concepts}</span></td>
+        <td>${esc(r.latest_period || "—")}</td>
+        <td>${esc(r.last_filing_date || "—")}</td>
+        <td class="sub">${esc(r.listing_note || "no live listing")}</td>
+      </tr>`).join("")}</tbody>`
+    : `<tbody><tr><td class="empty">Every filer with data in the store is currently traded.</td></tr></tbody>`;
 
   const ISSUE_HINT = {
     "units differ": "the two concepts are quoted in different units, so the subset relationship cannot be checked",
