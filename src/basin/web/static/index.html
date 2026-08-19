@@ -19,7 +19,7 @@
 <meta property="og:image" content="{{BASE_URL}}/static/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Basin — peer-comparable financial data for US oil and gas producers.">
+<meta property="og:image:alt" content="The Basin mark.">
 
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Basin — peer-comparable oil &amp; gas data from SEC filings">
@@ -122,6 +122,13 @@
 
   /* ---- stat band: its own horizontal rule, generous air ---- */
 
+  /* The counts are store-wide and the grid under them is not. Saying so is
+     cheaper than making them cohort-aware, and more honest than letting the
+     reader assume either way. */
+  .stats-caption {
+    color: var(--dim); font-size: 11.5px;
+    margin: 0; padding: 20px 40px 0;
+  }
   .stats {
     display: flex;
     flex-wrap: wrap;
@@ -640,7 +647,13 @@
   </nav>
 </header>
 
-<div class="stats" id="stats"></div>
+<div id="stats-wrap" hidden>
+  <p class="stats-caption">
+    Across the whole store, every cohort and every company ever ingested — not the grid below,
+    which is scoped to the selected cohort.
+  </p>
+  <div class="stats" id="stats"></div>
+</div>
 
 <main>
   <section id="view-panel">
@@ -680,8 +693,11 @@
     <p class="note">
       Which companies tag which concepts in XBRL, and how recently. A solid mark is
       <strong>current</strong> (period ending 2023 or later); a faint mark means the filer tagged the
-      concept once and stopped. Blank is the gap the extraction layer has to close.
+      concept once and stopped. Blank is the gap the extraction layer has to close — which is why
+      the cohort matters here: outside one, the blanks include companies that are out of scope
+      rather than work still to do.
     </p>
+    <div class="cohorts" id="coverage-cohort-filter" role="group" aria-label="Cohort"></div>
     <div class="scroll"><table class="matrix" id="coverage-table"></table></div>
     <div class="legend">
       <span><span class="cell has current"></span>Current</span>
@@ -1084,30 +1100,57 @@ function clusterByCompany(rows, valueOf) {
 let concepts = [];
 let cohort = null;
 
+let cohortRows = [];
+
+// The cohort is one selection shared by every view that has one, not a control
+// per view. Panel and Coverage answering "which companies" differently is the
+// discrepancy this filter exists to remove, and two independent pickers would
+// reintroduce it a click later.
+const COHORT_FILTERS = {
+  "#cohort-filter": () => loadKpiIndex().then(loadPanel),
+  "#coverage-cohort-filter": () => loadCoverage(),
+};
+
+function renderCohortFilters() {
+  for (const id of Object.keys(COHORT_FILTERS)) {
+    const el = $(id);
+    if (!el) continue;
+    el.innerHTML = cohortRows
+      .map((r) => `<button type="button" data-cohort="${esc(r.cohort)}" ` +
+                  `aria-pressed="${r.cohort === cohort}" ` +
+                  `title="${r.with_facts} of ${r.companies} have facts in the store">` +
+                  `${esc(r.cohort)}<span class="n">${r.companies}</span></button>`)
+      .join("") +
+      `<button type="button" data-cohort="" aria-pressed="${cohort === null}" ` +
+      `title="Every company in the store, including ones that were never in a cohort. ` +
+      `Useful for auditing what has been ingested, not for reading as scope.">All</button>`;
+  }
+}
+
 async function loadCohorts() {
-  const rows = await api("/api/cohorts");
-  if (!rows.length) return;
+  cohortRows = await api("/api/cohorts");
+  if (!cohortRows.length) return;
   // Default to the largest cohort rather than to "all": an unfiltered panel
   // mixes cohorts, and a mixed peer table is the one thing this view must not
   // quietly render.
-  cohort = rows[0].cohort;
-  $("#cohort-filter").innerHTML = rows
-    .map((r) => `<button type="button" data-cohort="${esc(r.cohort)}" ` +
-                `aria-pressed="${r.cohort === cohort}" ` +
-                `title="${r.with_facts} of ${r.companies} have facts in the store">` +
-                `${esc(r.cohort)}<span class="n">${r.companies}</span></button>`)
-    .join("") +
-    `<button type="button" data-cohort="" aria-pressed="false" ` +
-    `title="Every cohort at once. Useful for auditing the store, not for reading a peer table.">All</button>`;
+  cohort = cohortRows[0].cohort;
+  renderCohortFilters();
 
-  $("#cohort-filter").addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-cohort]");
-    if (!b) return;
-    cohort = b.dataset.cohort || null;
-    $("#cohort-filter").querySelectorAll("button").forEach((x) =>
-      x.setAttribute("aria-pressed", String(x === b)));
-    loadKpiIndex().then(loadPanel);
-  });
+  for (const [id, reload] of Object.entries(COHORT_FILTERS)) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-cohort]");
+      if (!b) return;
+      cohort = b.dataset.cohort || null;
+      renderCohortFilters();   // every filter, so the views cannot disagree
+      // Coverage caches its render, so drop it: whichever view is on screen
+      // reloads now, and the other picks up the new cohort when it is opened.
+      loaded.delete("coverage");
+      reload();
+      if (id === "#coverage-cohort-filter") loaded.add("coverage");
+    });
+  }
 }
 
 async function loadConcepts() {
@@ -1295,7 +1338,7 @@ const SHORT_LABEL = {
 };
 
 async function loadCoverage() {
-  const data = await api("/api/coverage");
+  const data = await api(`/api/coverage${cohort ? `?cohort=${encodeURIComponent(cohort)}` : ""}`);
   const labels = Object.fromEntries(concepts.map((c) => [c.key, c.label]));
   const short = (k) => labels[k] || k;
 
@@ -1621,7 +1664,7 @@ async function showView(view) {
   // dataset does and does not hold. Above the panel they described a different
   // population than the table underneath -- 135 companies over a 75-company
   // cohort -- which invited reading them as the panel's own totals.
-  $("#stats").hidden = view !== "coverage";
+  $("#stats-wrap").hidden = view !== "coverage";
   if (!loaded.has(view)) { await loaders[view](); loaded.add(view); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -1656,7 +1699,7 @@ document.addEventListener("pointerdown", (e) => {
   $("#history").hidden = true;
 });
 
-$("#stats").hidden = true;
+$("#stats-wrap").hidden = true;
 loadCohorts().then(loadKpiIndex).then(loadConcepts);
 </script>
 </body>

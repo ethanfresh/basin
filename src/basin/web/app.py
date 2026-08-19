@@ -225,10 +225,10 @@ def api_history(cik: str = Query(...), concept: str = Query(...),
 
 
 @app.get("/api/coverage")
-def api_coverage() -> dict:
+def api_coverage(cohort: str | None = None) -> dict:
     conn = _conn()
     try:
-        return queries.coverage_matrix(conn)
+        return queries.coverage_matrix(conn, cohort)
     finally:
         conn.close()
 

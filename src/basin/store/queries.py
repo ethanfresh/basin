@@ -336,24 +336,34 @@ def companies(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     )
 
 
-def coverage_matrix(conn: sqlite3.Connection) -> dict[str, Any]:
+def coverage_matrix(
+    conn: sqlite3.Connection, cohort: str | None = None
+) -> dict[str, Any]:
     """Which companies have which concepts, and how recently.
 
     The point of this view is that absence is as informative as presence: a
     blank cell here is what the extraction layer has to fill.
+
+    Which makes the scope load-bearing. Unfiltered, the grid draws that mandate
+    over every company the store has ever ingested -- including the SIC-1311
+    residue that was never in a cohort, and filers since acquired or taken
+    private. Those blanks are not work to be done; they are companies out of
+    scope. Passing a cohort measures the mandate the product actually has.
     """
     concept_keys = [c["key"] for c in concepts(conn)]
-    rows = _rows(
-        conn,
-        """
+    sql = """
         SELECT c.cik, c.name, c.ticker, f.concept_key,
                MAX(f.period_end) AS latest_period,
                COUNT(*) AS cells
         FROM company c
         LEFT JOIN fact_current f ON f.cik = c.cik
-        GROUP BY c.cik, f.concept_key
-        """,
-    )
+    """
+    params: tuple = ()
+    if cohort:
+        sql += " WHERE c.cohort = ?"
+        params = (cohort,)
+    sql += " GROUP BY c.cik, f.concept_key"
+    rows = _rows(conn, sql, params)
 
     by_company: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -370,7 +380,11 @@ def coverage_matrix(conn: sqlite3.Connection) -> dict[str, Any]:
     companies_out = sorted(
         by_company.values(), key=lambda c: (-len(c["concepts"]), c["name"] or "")
     )
-    return {"concept_keys": concept_keys, "companies": companies_out}
+    return {
+        "concept_keys": concept_keys,
+        "companies": companies_out,
+        "cohort": cohort,
+    }
 
 
 def data_quality(conn: sqlite3.Connection) -> dict[str, Any]:
