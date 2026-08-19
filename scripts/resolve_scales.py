@@ -42,8 +42,23 @@ def main(argv: list[str] | None = None) -> int:
             """
             SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
                    f.product,
-                   v.scale_found, v.status AS verify_status, v.units_nearby,
-                   v.scale_declared
+                   -- A figure read off the printed table is printed at the
+                   -- scale it is stored at: the row IS the page. There is no
+                   -- divisor to infer, so it is declared rather than searched
+                   -- for, and the value-per-barrel test is left to do the one
+                   -- job it is good at -- choosing the unit.
+                   CASE WHEN f.extracted_by = 'table:reserves' THEN 1.0
+                        ELSE v.scale_found END AS scale_found,
+                   v.status AS verify_status, v.units_nearby,
+                   --
+                   -- Only the table rows get the zero. A `scale_declared` of
+                   -- 0 already sits on 2,333 XBRL rows, where it was inferred
+                   -- from markup this resolver was tuned against; honouring
+                   -- those too costs 80 currently-resolved cells across 13
+                   -- company-periods, and whether that trade is right is a
+                   -- separate question from this one. Left alone deliberately.
+                   CASE WHEN f.extracted_by = 'table:reserves' THEN 0
+                        ELSE NULLIF(v.scale_declared, 0) END AS scale_declared
             FROM fact_current f
             LEFT JOIN fact_verification v ON v.fact_id = f.id
             WHERE f.concept_key IN (?, ?, ?, 'standardized_measure')
@@ -135,8 +150,52 @@ def main(argv: list[str] | None = None) -> int:
                     total_row["value"] / resolution.reserve_divisor
                 ) * total_conv.factor
 
+        # A declared unit that is wrong for one product line is wrong for the
+        # whole line item, so the rows are judged together rather than one at a
+        # time.
+        #
+        # Range's 2021 reserve table prints gas in MMcf and both oil and NGL in
+        # MMBbls. Read as tagged the NGL line is 5.8e11 BOE and rejected, while
+        # the oil line is 2.38e10 -- under the ceiling, and $0.52/BOE against
+        # the standardized measure, so it survived every test applied to it
+        # alone and ranked first in the panel. They are the same label in the
+        # same table: the one that fails convicts the other.
+        #
+        # Nothing is corrected. Basin does not rewrite a filer's unit, so the
+        # outcome is an unresolved cell, which is what the tagging supports.
+        discredited: set[str] = set()
+        for row in group:
+            if row["concept_key"] == "standardized_measure":
+                continue
+            unit = row["unit"]
+            conversion = conversion_for(unit)
+            if conversion is None or conversion.canonical == "USD":
+                continue
+            reading = (row["value"] / resolution.reserve_divisor) * conversion.factor
+            if not reading:
+                continue
+            # Either test convicts the label. Talos prints oil and NGL both in
+            # MMBbls: the oil line implies $0.05/BOE and is rejected, while the
+            # NGL line implies $0.34 and clears the floor by four cents. One
+            # label, one table, one verdict.
+            if abs(reading) > 1e11:
+                discredited.add(unit)
+            elif measure is not None and measure["value"] / reading < MIN_USD_PER_BOE:
+                # Only the low side indicts the label, and the asymmetry is the
+                # point. A reading that implies too few dollars per barrel says
+                # the barrels are too many, which is what a unit inflated by a
+                # thousand looks like. A reading that implies a lot of dollars
+                # per barrel says the barrels are few -- which is simply what a
+                # minor product line is, and testing it against the measure for
+                # the whole reserve base would convict every small component.
+                discredited.add(unit)
+
         for row in group:
             is_measure = row["concept_key"] == "standardized_measure"
+            if not is_measure and row["unit"] in discredited:
+                counts["rejected: unit implausible for a sibling line"] += 1
+                clear_scale(conn, row["id"])
+                continue
             if is_measure:
                 unit, divisor = row["unit"], resolution.measure_divisor
             else:
