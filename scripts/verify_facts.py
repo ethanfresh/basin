@@ -21,6 +21,7 @@ from pathlib import Path
 
 from basin.documents import corpus as corpus_store
 from basin.documents import find_value, primary_document
+from basin.documents.locate import is_wrapper_form, substantive_exhibits
 from basin.documents.inline import match_fact, tagged_figures
 from basin.documents.tables import header_for_value, parse_tables
 from basin.documents.headers import unit_hints
@@ -40,16 +41,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--concept", action="append", default=[])
     parser.add_argument("--since", default="2023-01-01", help="minimum period_end")
     parser.add_argument("--recheck", action="store_true")
+    parser.add_argument("--retry-failed", action="store_true",
+                        help="re-check only facts previously recorded not_found")
     return parser.parse_args(argv)
 
 
-def load_documents(client: EdgarClient, cik: str, accession: str):
+def load_documents(client: EdgarClient, cik: str, accession: str,
+                   form: str | None = None):
     """Every stored document for a filing, primary first.
 
     D4. Verification used to read only the primary document, leaving 609
     stored exhibits unsearched -- and the EX-99.1 earnings release is exactly
     where guidance and per-unit costs are announced. Exhibits are searched
     after the primary, so a figure in both still cites the filing proper.
+
+    Stored exhibits are not enough on their own. What sits in the corpus is
+    whatever a previous fetch pass happened to collect, so verification was
+    silently bounded by another script's scope: a 40-F or 6-K whose exhibits
+    were never fetched had only its cover sheet to search, and every figure in
+    it recorded as not found. 186 revenue and capex facts failed this way, 125
+    of them on those two forms. For a wrapper form the exhibits are now read
+    from the filing index and fetched on demand, so verification depends on the
+    filing rather than on what was downloaded earlier.
     """
     primary = primary_document(cik, accession, client=client)
     stored = [
@@ -57,6 +70,13 @@ def load_documents(client: EdgarClient, cik: str, accession: str):
         for d in corpus_store.stored_documents(accession)
         if d.name.lower().endswith((".htm", ".html"))
     ]
+    if is_wrapper_form(form) and len(stored) <= 1:
+        try:
+            for name in substantive_exhibits(client, cik, accession):
+                if name not in stored:
+                    stored.append(name)
+        except (NotFound, SECError):
+            pass
     if primary and primary not in stored:
         stored.insert(0, primary)
     ordered = ([primary] if primary in stored else []) + [
@@ -190,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect(args.store)
 
     sql = """
-        SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end, f.accession
+        SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
+               f.accession, f.form
         FROM fact_current f
         WHERE f.period_end >= ?
     """
@@ -198,7 +219,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.concept:
         sql += f" AND f.concept_key IN ({','.join('?' * len(args.concept))})"
         params += args.concept
-    if not args.recheck:
+    if args.retry_failed:
+        sql += (" AND f.id IN (SELECT fact_id FROM fact_verification "
+                "WHERE status = 'not_found')")
+    elif not args.recheck:
         sql += " AND f.id NOT IN (SELECT fact_id FROM fact_verification)"
     # Grouped by accession so each document is fetched once.
     sql += " ORDER BY f.accession, f.concept_key LIMIT ?"
@@ -221,7 +245,9 @@ def main(argv: list[str] | None = None) -> int:
         with EdgarClient() as client:
             for n, ((cik, accession), group) in enumerate(sorted(by_accession.items()), 1):
                 try:
-                    loaded = load_documents(client, cik, accession)
+                    loaded = load_documents(
+                        client, cik, accession, form=group[0].get("form")
+                    )
                 except (NotFound, SECError) as exc:
                     for fact in group:
                         record_verification(conn, fact["id"], "unavailable", note=str(exc)[:200])

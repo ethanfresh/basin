@@ -21,12 +21,22 @@ import sys
 from pathlib import Path
 
 from basin.documents import corpus
-from basin.documents.locate import earnings_exhibits, filing_dir
+from basin.documents.locate import (
+    annual_report_exhibits,
+    earnings_exhibits,
+    filing_dir,
+)
 from basin.edgar import EdgarClient, NotFound, SECError
+from basin.edgar.discovery import submissions_url
 from basin.store import DEFAULT_DB_PATH, connect, record_filing
 
 SUBMISSIONS = Path("data/cache/submissions")
-FORMS = ("10-K", "10-Q", "8-K")
+# 20-F and 40-F are the annual reports of foreign private issuers, and they are
+# in the default set because 20 of the cohort's filers use one instead of a
+# 10-K. They are not interchangeable with it: a 20-F carries SEC Subpart 1200
+# reserve disclosure in its primary document, while a 40-F is often a cover
+# sheet whose substance is attached.
+FORMS = ("10-K", "10-Q", "8-K", "20-F", "40-F")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,9 +46,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="most recent filings to take of each form")
     parser.add_argument("--forms", default=",".join(FORMS))
     parser.add_argument("--since", default="2023-01-01")
+    parser.add_argument("--cik", action="append", default=[],
+                        help="limit to these CIKs (default: every company)")
     parser.add_argument("--exhibits", action="store_true", default=True,
-                        help="also fetch EX-99.1 from 8-Ks (guidance lives there)")
+                        help="also fetch EX-99 attachments from 8-Ks (guidance) "
+                             "and 40-Fs (the AIF and reserve statements)")
     return parser.parse_args(argv)
+
+
+def submissions(client: EdgarClient, cik: str) -> dict | None:
+    """One filer's submissions record, from the cache or from EDGAR.
+
+    Previously this read the cache and skipped anything missing from it, which
+    silently excluded every company added since the cache was last populated --
+    22 of the cohort, including two 40-F filers whose reserve disclosure is the
+    whole point of fetching exhibits. A cache miss is now a fetch, not a skip.
+    """
+    cached = SUBMISSIONS / f"CIK{cik}.json"
+    if cached.exists():
+        return json.loads(cached.read_text())
+    try:
+        payload = client.get_json(submissions_url(cik))
+    except (NotFound, SECError):
+        return None
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(payload))
+    return payload
 
 
 def wanted_filings(payload: dict, forms: tuple[str, ...], since: str, per_form: int):
@@ -66,17 +99,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     forms = tuple(args.forms.split(","))
     conn = connect(args.store)
-    ciks = [r[0] for r in conn.execute("SELECT cik FROM company ORDER BY cik")]
+    ciks = args.cik or [r[0] for r in conn.execute("SELECT cik FROM company ORDER BY cik")]
 
     counts: collections.Counter = collections.Counter()
     try:
         with EdgarClient() as client:
             for n, cik in enumerate(ciks, 1):
-                cached = SUBMISSIONS / f"CIK{cik}.json"
-                if not cached.exists():
+                payload = submissions(client, cik)
+                if payload is None:
                     counts["no submissions"] += 1
                     continue
-                payload = json.loads(cached.read_text())
 
                 for form, filed, accession, document, period in wanted_filings(
                     payload, forms, args.since, args.per_company
@@ -84,8 +116,17 @@ def main(argv: list[str] | None = None) -> int:
                     record_filing(conn, accession, cik, form, filed,
                                   period_end=period or None, primary_doc=document)
                     targets = [document]
-                    if args.exhibits and form.startswith("8-K"):
-                        targets += earnings_exhibits(client, cik, accession)
+                    if args.exhibits:
+                        base = form.split("/")[0]
+                        if base == "8-K":
+                            # Guidance is announced in the earnings release
+                            # attached to the 8-K, not in the 8-K.
+                            targets += earnings_exhibits(client, cik, accession)
+                        elif base == "40-F":
+                            # Same shape, different form: the reserve
+                            # disclosure is in the attached Annual Information
+                            # Form, not in the 40-F cover sheet.
+                            targets += annual_report_exhibits(client, cik, accession)
 
                     for name in targets:
                         if corpus.is_stored(accession, name):
