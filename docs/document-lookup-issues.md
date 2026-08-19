@@ -1,13 +1,14 @@
 # Document lookup: known defects and proposed fixes
 
-> **Status: all eight fixed.** Numbers below are before → after, measured
+> **Status: all nine fixed.** Numbers below are before → after, measured
 > against the store, not estimated. Verified facts rose from 669 to **2,059**,
 > of which **100% are now located** and **99.9% by reading the filing's own
 > markup** rather than searching its text.
 
 How Basin finds a number in a filing, what the original approach got wrong,
-what was done, and what remains open. The original defect list is preserved
-below with its measurements, each followed by the outcome.
+what was done, and what remains open. The original eight defects are preserved
+below with their measurements, each followed by the outcome; D9 was found later,
+by reading the citations the fixes produced.
 
 **The headline held up.** Lookup was a string search and did not need to be:
 every primary document is inline XBRL, so each tagged figure is already marked
@@ -27,6 +28,7 @@ the scale resolver from an inference engine into a check.
 | D6 | Page numbers unmeasured | unknown | **measured: only 37% match the printed folio** |
 | D7 | Zero values called absent | 15 `not_found` | **0 `not_found`, 5 `unverifiable`** |
 | D8 | Parenthesised negatives | never matched | matched |
+| D9 | Contents read as the body | 317 citations under an item they are not in | **0**; 987 citations in all re-sectioned |
 
 ## New findings
 
@@ -70,6 +72,7 @@ ground.
 | **D6** | Page numbers are derived, not read | Unquantified, possibly off by a cover page | Compare to printed folio |
 | **D7** | Small and zero values are unsearchable | 13 of 15 misses | Require markup, not digits |
 | **D8** | Negative numbers in parentheses never match | Unknown | Add `(1,234)` form |
+| **D9** | The table of contents is read as the body | A figure on page 11 cited as Item 16 | Discard contents rows |
 
 ---
 
@@ -266,6 +269,59 @@ routinely negative.
 **Fixed.** Both forms are generated, and a parenthesised match reads as
 negative. Still latent — no negative-valued concept is ingested yet — but it
 will be live the moment revisions or production declines are added.
+
+---
+
+## D9. The table of contents is read as the body
+
+**What happens.** `section_of` returns the last `Item N.` heading before the
+figure's offset.
+
+**Why it is wrong.** A 10-K lists every item on its contents page, before the
+body starts. So for anything printed before the first real heading, the last
+preceding heading is the last row of the *contents* — Item 16 for a 10-K,
+Item 6 for a 10-Q. EQT's proved reserves summary sits on page 11 and was cited
+as "Item 16. Form 10-K Summary": the string occurs at offset 5,798 in the
+contents and again at 606,236, where the section actually is.
+
+**Measured.** **317 of 9,455** located citations across **173 documents** were
+attributed to an item they are not in. The two headline cases are a 10-K's
+Item 16 and a 10-Q's Item 6 — both the last row of the contents.
+
+**Fixed.** A contents row is recognisable on its own: it carries the page it
+points to, either at the end of its line ("Business .... 8") or on the next
+line. One such row proves nothing — an empty "Item 6. [Reserved]" can sit just
+above a printed folio — so rows are only discarded where four or more run
+together. Two layouts complicate the run: the contents restart their numbering
+at each Part (Chesapeake lists 1, 2, 3, 4 and then 1, 1A, 2 … 6), and a real
+heading can sit directly under the block above its own folio (Comstock's
+Item 1), which is a contents row in every respect except that it is the
+section. The last restart in a block is read as the second when it is too
+short to be another Part.
+
+Of the 317, **104 moved to the right item** and **213 to no section at all** —
+those are filings whose body headings the pattern never matched (`P ART I` /
+`I tem 1.`, letter-spaced by the filer), where the only headings in the
+document were the contents. `None` is the honest answer there, and the
+citation drawer omits the line rather than naming a section the figure is not
+in.
+
+**Re-recorded, and the count is larger than the defect.** The same pass fixed
+the pattern's whitespace: the gap between an item number and its title was
+capped at four whitespace characters, and EQT sets its headings with eight
+non-breaking spaces, so a filing's *entire* body index could go unmatched and
+leave only its contents to cite from. Re-deriving every stored section from
+the corpus — no fetching, the offset and document are already recorded — moved
+**774 of 9,455 citations to a different item** and **213 to none**, 8,468
+unchanged. EQT's proved reserves summary now reads "Item 1. Business".
+
+**Not fixed, and visible in the same measurement.** A section span that runs
+from page 1 is usually not this defect but a page defect: filings that separate
+pages with CSS rather than `<hr>` parse as a single page, so every citation
+into them reads "page 1". And financial statements bound after the signature
+page sit physically inside Item 15/16, so the last-heading rule labels them
+Item 16 correctly-by-position and wrongly-by-substance. Both are D6's territory,
+not this one.
 
 ---
 
