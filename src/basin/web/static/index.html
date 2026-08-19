@@ -1617,6 +1617,11 @@ async function showView(view) {
     b.setAttribute("aria-selected", String(b.dataset.view === view)));
   document.querySelectorAll("main section").forEach((s) =>
     s.hidden = s.id !== `view-${view}`);
+  // Store-wide counts belong with Coverage, which is the view about what the
+  // dataset does and does not hold. Above the panel they described a different
+  // population than the table underneath -- 135 companies over a 75-company
+  // cohort -- which invited reading them as the panel's own totals.
+  $("#stats").hidden = view !== "coverage";
   if (!loaded.has(view)) { await loaders[view](); loaded.add(view); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -1651,6 +1656,7 @@ document.addEventListener("pointerdown", (e) => {
   $("#history").hidden = true;
 });
 
+$("#stats").hidden = true;
 loadCohorts().then(loadKpiIndex).then(loadConcepts);
 </script>
 </body>
