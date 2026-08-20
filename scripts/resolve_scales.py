@@ -29,6 +29,88 @@ RESERVE_CONCEPTS = (
     "proved_undeveloped_reserves_boe",
 )
 
+# Concepts whose canonical form follows from the declaration, with nothing to
+# infer and so nothing to adjudicate.
+#
+# The value-per-barrel machinery below exists because a tagged reserve leaves
+# two questions open: what divisor the page applied, and which unit the filer
+# meant. Neither is open here.
+#
+# A currency needs no unit conversion -- USD is already canonical -- and the
+# only remaining question, the divisor, is not open either: an XBRL value is
+# absolute, and a figure read off a printed table is the figure as printed with
+# its column header for a unit. A volume read off a table is the same case: the
+# header states the unit, so there is no filer declaration to distrust.
+#
+# What is deliberately NOT here is a volume tagged in XBRL. That is exactly
+# where a filer's declared unit is unreliable -- Gulfport tags 3,612 Bcf of gas
+# as "bbl" -- and resolving it needs the corroboration the reserve path gets
+# from the standardized measure. Left unresolved rather than guessed.
+DIRECT_CONCEPTS = (
+    "capex",
+    "oil_and_gas_revenue",
+    "production_volume",
+    # The reserve resolver reads a standardized measure to test reserves
+    # against, and clears the whole period when that test cannot be made. That
+    # is right for the reserve volumes, whose magnitude depended on the test,
+    # and wrong for the measure itself: it is a dollar figure printed on a
+    # page, and whether the barrels beside it could be read says nothing about
+    # it. Filled here only where the resolver left it blank.
+    "standardized_measure",
+)
+
+
+def resolve_direct(conn, counts) -> None:
+    """Record the magnitude of facts that need no inference to read.
+
+    Runs last and writes only where nothing is stored, so the reserve resolver
+    stays the authority wherever it reached a verdict -- including the verdict
+    that a row cannot be resolved and must be cleared.
+    """
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            f"""
+            SELECT f.id, f.value, f.unit, f.extracted_by
+            FROM fact_current f
+            LEFT JOIN fact_scale s ON s.fact_id = f.id
+            WHERE f.concept_key IN ({','.join('?' * len(DIRECT_CONCEPTS))})
+              AND s.fact_id IS NULL
+            """,
+            DIRECT_CONCEPTS,
+        )
+    ]
+    for row in rows:
+        conversion = conversion_for(row["unit"])
+        if conversion is None:
+            # A rate unit, or a currency that is not USD. Both would need an
+            # assumption this project makes explicitly or not at all: a heat
+            # content for USD/Mcf, an exchange rate for CAD.
+            counts["direct: no canonical form for the unit"] += 1
+            continue
+        from_table = str(row["extracted_by"] or "").startswith("table:")
+        if conversion.canonical != "USD" and not from_table:
+            counts["direct: volume tagged in XBRL, left to the reserve path"] += 1
+            continue
+        canonical = row["value"] * conversion.factor
+        # The same ceiling the reserve path applies. Nothing in this cohort
+        # produces 1e11 BOE in a year, so past that the column was misread.
+        if conversion.canonical != "USD" and abs(canonical) > 1e11:
+            counts["direct: implausible magnitude, cleared"] += 1
+            clear_scale(conn, row["id"])
+            continue
+        record_scale(
+            conn,
+            row["id"],
+            1.0,
+            canonical,
+            conversion.canonical,
+            "read from the printed table; unit from the column header"
+            if from_table else "as tagged; the value is already absolute",
+            conversion_note=conversion.note or None,
+        )
+        counts["direct: resolved from the declaration"] += 1
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -321,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
                 rejected=resolution.rejected or None,
                 note=resolution.note or None,
             )
+    conn.commit()
+
+    resolve_direct(conn, counts)
     conn.commit()
 
     total_facts = conn.execute("SELECT COUNT(*) FROM fact_scale").fetchone()[0]

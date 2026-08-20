@@ -537,6 +537,7 @@
     margin: 12px 2px 0; font-size: 11.5px; color: var(--muted); }
   .panel-legend .swatch { font-family: var(--mono); margin-right: 6px; }
   .panel-legend .count { color: var(--text); font-family: var(--mono); }
+  td.as-filed .cite-open-btn.ok, td.as-filed .cite-open-btn.ok .unit { color: var(--muted); }
   .panel-legend .swatch.ok { color: var(--muted); }
   .panel-legend .swatch.dead { color: var(--bad); text-decoration: underline solid var(--bad) 1px; text-underline-offset: 3px; }
   .panel-legend .swatch.pending { color: var(--warn); text-decoration: underline dotted var(--warn) 1px; text-underline-offset: 3px; }
@@ -1349,23 +1350,22 @@ function renderPanel() {
   $("#panel-table").querySelectorAll(".cite-open-btn").forEach((el) =>
     el.addEventListener("click", () => openCitation(el.dataset.fact)));
 
-  renderPanelLegend(rows, data.concept_keys, normalized);
+  renderPanelLegend(rows, data.concept_keys);
 }
 
 // The key to the colours, counted from the rows actually on screen rather than
 // stated as a fixed list. A state with no cells in this selection is not
 // explained, because there is nothing to explain.
 //
-// Counted over cells that render a figure, not every cell held: normalizing
-// hides any cell whose magnitude could not be resolved, and a legend totalling
-// cells the reader cannot see does not describe the table in front of them.
-function renderPanelLegend(rows, keys, normalized) {
+// Counted over cells that render a figure, so the totals describe the table in
+// front of the reader. A cell with no resolved magnitude still renders, as the
+// figure the filer reported, and still opens its citation -- so it counts.
+function renderPanelLegend(rows, keys) {
   const counts = { ok: 0, dead: 0, pending: 0 };
   for (const row of rows)
     for (const key of keys) {
       const cell = row.cells[key];
-      if (cell && (normalized ? cell.canonical_value : cell.value) != null)
-        counts[citeState(cell)] += 1;
+      if (cell && cell.value != null) counts[citeState(cell)] += 1;
     }
   const total = counts.ok + counts.dead + counts.pending;
   const entries = [
@@ -1414,13 +1414,17 @@ function wideCell(row, key, normalized) {
   // scale, so the honest cell states the reported figure and says it does not
   // share the column's scale -- rather than reading as "not disclosed", which
   // is a different and worse claim.
+  const state = citeState(cell);
   if (value == null) {
     if (cell.value == null) return `<td class="kpi-col num empty-cell">·</td>`;
+    // Still a cited figure, so it opens its citation like any other. Only the
+    // conversion is missing; withholding the drawer here made the cells whose
+    // magnitude is unsettled the ones a reader could not check, which is
+    // backwards -- those are the cells most worth looking at the filing for.
     return `<td class="kpi-col num as-filed"
-      title="As filed: ${esc(cell.value)} ${esc(cell.unit)}. Not converted to BOE — the filing does not settle the magnitude, so this figure is not comparable with the rest of the column.">
-      <span class="sub">${fmtCompact(cell.value)}<span class="unit">${esc(cell.unit || "")}</span></span></td>`;
+      title="As filed: ${esc(cell.value)} ${esc(cell.unit)}. Not converted to BOE — the filing does not settle the magnitude, so this figure is not comparable with the rest of the column.\n${STATE_NOTE[state]}\n\nClick to validate against the filing.">
+      <span class="cite-open-btn sub ${state}" data-fact="${cell.fact_id}">${fmtCompact(cell.value)}<span class="unit">${esc(cell.unit || "")}</span></span></td>`;
   }
-  const state = citeState(cell);
   const title = `${esc(cell.tag)}\n${esc(cell.period_end)} · ${esc(cell.form)} ${esc(cell.accession)}`
     + `\n${STATE_NOTE[state]}`
     + `\n\nClick to validate against the filing.`;
