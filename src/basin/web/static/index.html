@@ -40,6 +40,7 @@
     --accent: #00e585;
     --accent-dim: rgba(0, 229, 133, 0.14);
     --warn: #e5a000;
+    --bad: #ff5f52;
     /* Inter for text, JetBrains Mono for figures. Both fall back to system
        faces so the dashboard still renders correctly with no network. */
     --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
@@ -521,6 +522,25 @@
   th.sortable:hover { color: var(--text); }
   th.sorted { color: var(--accent); }
   td.kpi-col .unit { color: var(--dim); font-size: 10px; margin-left: 4px; }
+
+  /* Three states, not two. A figure checked against its filing and not located
+     is a finding; a figure nothing has checked yet is unfinished work. Colour
+     alone would not distinguish them for a reader who cannot see it, so each
+     carries an underline as well -- solid for a dead end, dotted for pending. */
+  td.kpi-col .dead { color: var(--bad); text-decoration: underline solid var(--bad) 1px; text-underline-offset: 3px; }
+  td.kpi-col .dead .unit { color: var(--bad); opacity: 0.55; }
+  td.kpi-col .pending { color: var(--warn); text-decoration: underline dotted var(--warn) 1px; text-underline-offset: 3px; }
+  td.kpi-col .pending .unit { color: var(--warn); opacity: 0.55; }
+
+  /* The key to those colours, each swatch drawn as the cell it stands for. */
+  .panel-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center;
+    margin: 12px 2px 0; font-size: 11.5px; color: var(--muted); }
+  .panel-legend .swatch { font-family: var(--mono); margin-right: 6px; }
+  .panel-legend .count { color: var(--text); font-family: var(--mono); }
+  td.as-filed .cite-open-btn.ok, td.as-filed .cite-open-btn.ok .unit { color: var(--muted); }
+  .panel-legend .swatch.ok { color: var(--muted); }
+  .panel-legend .swatch.dead { color: var(--bad); text-decoration: underline solid var(--bad) 1px; text-underline-offset: 3px; }
+  .panel-legend .swatch.pending { color: var(--warn); text-decoration: underline dotted var(--warn) 1px; text-underline-offset: 3px; }
   /* A cell with nothing in it and a cell whose magnitude could not be resolved
      are different findings, so they get different marks rather than both
      rendering as blank. */
@@ -647,8 +667,14 @@
     /* Below this width the citation cannot share a row with the figure, so
        it moves under the company name rather than being dropped -- a value
        without its source is the one thing that must never render. */
-    .col-product { display: none; }
     .name .cik { display: none; }
+
+    /* Product stays. Rows are keyed by company AND product, so this is the
+       column that tells two rows of the same filer apart: dropping it leaves
+       a reader looking at four DEC rows with no way to know which is oil, gas
+       or the total. It is a short badge and costs little width. */
+    .col-product { padding-left: 8px; padding-right: 8px; }
+    .col-product .tag { font-size: 10px; padding: 1px 5px; }
 
     /* Reclaim the ticker column so the pinned company name keeps enough room
        for the marks to be readable alongside it. */
@@ -701,6 +727,7 @@
       <div id="panel-warning-body"></div>
     </details>
     <div class="scroll"><table id="panel-table"></table></div>
+    <div class="panel-legend" id="panel-legend"></div>
   </section>
 
   <section id="view-trends" hidden>
@@ -1181,7 +1208,6 @@ async function loadConcepts() {
   concepts = await api("/api/concepts");
   $("#history-concept").innerHTML = concepts
     .map((c) => `<option value="${c.key}">${esc(c.label)}</option>`).join("");
-  await loadPeriods();
 }
 
 async function loadPeriods() {
@@ -1189,10 +1215,22 @@ async function loadPeriods() {
   // Default to each company's own latest rather than to the newest period in
   // the store. The newest period is usually one off-cycle filer's quarter --
   // the panel used to open on 2026-03-31 showing a single company.
+  const keep = $("#period").value;
   $("#period").innerHTML =
     `<option value="latest">Latest reported</option>` +
-    periods.map((p) => `<option value="${p}">${p}</option>`).join("");
-  await loadPanel();
+    periods.map((p) => `<option value="${p}"${p === keep ? " selected" : ""}>${p}</option>`).join("");
+}
+
+// The three requests behind the panel, started together.
+//
+// They used to run in a chain -- concepts, then periods, then the grid -- and
+// none of them needs the one before it: the grid opens on "latest", which is a
+// mode rather than a period the list has to supply. Chained, the wait was the
+// sum of all three; started together it is the longest one.
+async function loadPanelView() {
+  const panel = loadPanel();
+  await Promise.all([loadConcepts(), loadPeriods(), panel]);
+  renderPanel();   // again, now that the concept labels have arrived
 }
 
 async function loadPanel() {
@@ -1328,6 +1366,50 @@ function renderPanel() {
 
   $("#panel-table").querySelectorAll(".cite-open-btn").forEach((el) =>
     el.addEventListener("click", () => openCitation(el.dataset.fact)));
+
+  renderPanelLegend(rows, data.concept_keys);
+}
+
+// The key to the colours, counted from the rows actually on screen rather than
+// stated as a fixed list. A state with no cells in this selection is not
+// explained, because there is nothing to explain.
+//
+// Counted over cells that render a figure, so the totals describe the table in
+// front of the reader. A cell with no resolved magnitude still renders, as the
+// figure the filer reported, and still opens its citation -- so it counts.
+function renderPanelLegend(rows, keys) {
+  const counts = { ok: 0, dead: 0, pending: 0 };
+  for (const row of rows)
+    for (const key of keys) {
+      const cell = row.cells[key];
+      if (cell && cell.value != null) counts[citeState(cell)] += 1;
+    }
+  const total = counts.ok + counts.dead + counts.pending;
+  const entries = [
+    ["ok", "checked against the filing"],
+    ["dead", "checked — not located in the filing"],
+    ["pending", "not checked yet"],
+  ].filter(([state]) => counts[state] > 0);
+
+  $("#panel-legend").innerHTML = !total ? "" : entries.map(([state, label]) =>
+    `<span><span class="swatch ${state}">1,234</span>${esc(label)} `
+    + `<span class="count">${counts[state].toLocaleString()}</span></span>`).join("");
+}
+
+// Where a cell stands against its filing. Three outcomes, deliberately not
+// two: "found" is settled, "dead" was checked and the figure could not be
+// located or is too round to search for, and "pending" is a citation nobody
+// has checked yet. Painting the last two the same colour told a reader that
+// unfinished work and a dead end were the same thing.
+const STATE_NOTE = {
+  ok: "verified in the filing",
+  dead: "checked against the filing — the figure could not be located there",
+  pending: "not checked against the filing yet",
+};
+
+function citeState(cell) {
+  if (cell.verify_status === "found") return "ok";
+  return cell.verify_status ? "dead" : "pending";
 }
 
 // One cell: the value as filed, or the resolved magnitude when normalizing.
@@ -1349,17 +1431,22 @@ function wideCell(row, key, normalized) {
   // scale, so the honest cell states the reported figure and says it does not
   // share the column's scale -- rather than reading as "not disclosed", which
   // is a different and worse claim.
+  const state = citeState(cell);
   if (value == null) {
     if (cell.value == null) return `<td class="kpi-col num empty-cell">·</td>`;
+    // Still a cited figure, so it opens its citation like any other. Only the
+    // conversion is missing; withholding the drawer here made the cells whose
+    // magnitude is unsettled the ones a reader could not check, which is
+    // backwards -- those are the cells most worth looking at the filing for.
     return `<td class="kpi-col num as-filed"
-      title="As filed: ${esc(cell.value)} ${esc(cell.unit)}. Not converted to BOE — the filing does not settle the magnitude, so this figure is not comparable with the rest of the column.">
-      <span class="sub">${fmtCompact(cell.value)}<span class="unit">${esc(cell.unit || "")}</span></span></td>`;
+      title="As filed: ${esc(cell.value)} ${esc(cell.unit)}. Not converted to BOE — the filing does not settle the magnitude, so this figure is not comparable with the rest of the column.\n${STATE_NOTE[state]}\n\nClick to validate against the filing.">
+      <span class="cite-open-btn sub ${state}" data-fact="${cell.fact_id}">${fmtCompact(cell.value)}<span class="unit">${esc(cell.unit || "")}</span></span></td>`;
   }
   const title = `${esc(cell.tag)}\n${esc(cell.period_end)} · ${esc(cell.form)} ${esc(cell.accession)}`
-    + `${cell.verified ? "\nverified in the filing" : "\nnot located in the filing"}`
+    + `\n${STATE_NOTE[state]}`
     + `\n\nClick to validate against the filing.`;
   return `<td class="kpi-col num">
-    <span class="cite-open-btn ${cell.verified ? "ok" : "warn"}" data-fact="${cell.fact_id}" title="${title}">
+    <span class="cite-open-btn ${state}" data-fact="${cell.fact_id}" title="${title}">
       ${fmtCompact(value)}<span class="unit">${esc(unit || "")}</span>
     </span></td>`;
 }
@@ -1646,7 +1733,14 @@ async function openCitation(factId) {
     `<dl class="cite-field"><dt>${esc(label)}</dt><dd>${value}</dd></dl>`;
 
   const located = c.page != null;
-  const quote = c.line_text || c.source_span || "";
+  // A figure lifted from a table sits on a flattened line that is nothing but
+  // the number, and quoting "19,237" back at a reader proves nothing. Where the
+  // line carries no context of its own, show the surrounding span instead --
+  // the column headers and row label are what make the figure checkable.
+  const line = (c.line_text || "").trim();
+  const quote = line && line !== (c.printed || "").trim()
+    ? line
+    : (c.source_span || line);
   const highlighted = c.printed
     ? esc(quote).replaceAll(esc(c.printed), `<mark>${esc(c.printed)}</mark>`)
     : esc(quote);
@@ -1747,7 +1841,16 @@ $("#stats-wrap").hidden = true;
 // Stats after cohorts, not alongside: loadCohorts picks the default cohort, and
 // counting before it is chosen would render store-wide totals under a caption
 // claiming they describe a cohort.
-loadCohorts().then(loadStats).then(loadConcepts);
+//
+// After, but not before the grid. Awaiting the counts here put the headline
+// numbers ahead of the table in the queue, so the panel waited on a query it
+// does not use -- and the only way to see the grid was to touch a control that
+// calls loadPanel directly, which is what Normalize does. They start together
+// and each renders when it is ready.
+loadCohorts().then(() => {
+  loadStats();
+  return loadPanelView();
+});
 </script>
 </body>
 </html>

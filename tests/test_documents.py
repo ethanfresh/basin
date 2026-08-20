@@ -383,6 +383,21 @@ class TestMarkupLookup:
             value=3_617_856_000.0,
         ) is None
 
+    def test_refuses_a_value_match_with_no_concept_to_match_on(self):
+        """A figure that agrees only on value and period is not evidence.
+
+        The guard above reads `if concept_tag`, so a caller that withheld the
+        tag turned it off and took the earliest lookalike in the document.
+        """
+        from basin.documents.inline import match_fact, tagged_figures
+
+        assert match_fact(
+            tagged_figures(self.DOC),
+            concept_tag=None,
+            period_end="2025-12-31",
+            value=3_617_856_000.0,
+        ) is None
+
 
 class TestSectionAndFolio:
     def test_heading_split_across_table_cells_is_recovered(self):
@@ -399,6 +414,84 @@ class TestSectionAndFolio:
         doc = parse("<p>text</p><p>6</p><hr><p>more</p><p>7</p>")
         assert doc.pages == 2
         assert doc.folio(1) == 6 and doc.folio(2) == 7
+
+    # A 10-K's contents page lists every item before the body begins, laid out
+    # as EQT lays it out: number, title, and the page it points to.
+    CONTENTS = """
+    <p>TABLE OF CONTENTS</p><p>Page</p>
+    <p>Item 1.</p><p>Business</p><p>8</p>
+    <p>Item 1A.</p><p>Risk Factors</p><p>34</p>
+    <p>Item 2.</p><p>Properties</p><p>60</p>
+    <p>Item 15.</p><p>Exhibits and Financial Statement Schedules</p><p>149</p>
+    <p>Item 16.</p><p>Form 10-K Summary</p><p>155</p>
+    <hr>
+    <p>Item 1.&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;Business</p>
+    <p>We produced 1,234 Bcfe.</p>
+    <hr>
+    <p>Item 16.&#160;&#160;&#160;&#160;Form 10-K Summary</p><p>None.</p>
+    """
+
+    def test_the_table_of_contents_is_not_mistaken_for_the_body(self):
+        from basin.documents.text import parse, section_of
+
+        # D9: taking the last heading before an offset put a figure on page 2
+        # under Item 16, because the contents list every item before the body
+        # starts. The figure sits in Item 1.
+        doc = parse(self.CONTENTS)
+        assert section_of(doc.text, doc.text.index("1,234")) == "Item 1. Business"
+
+    def test_the_real_late_heading_still_governs_what_follows_it(self):
+        from basin.documents.text import parse, section_of
+
+        # Dropping the contents must not drop the sections they list.
+        doc = parse(self.CONTENTS)
+        assert section_of(doc.text, doc.text.index("None.")) == "Item 16. Form 10-K Summary"
+
+    def test_a_real_heading_below_the_contents_survives_them(self):
+        from basin.documents.text import parse, section_of
+
+        # Comstock's body Item 1 sits immediately under the contents block and
+        # above the page's printed folio, so it reads as one more contents row.
+        # The list restarting at Item 1 is what marks the block as over.
+        doc = parse("""
+        <p>Item 2.</p><p>MD&amp;A</p><p>22</p>
+        <p>Item 3.</p><p>Market Risk</p><p>26</p>
+        <p>Item 4.</p><p>Controls and Procedures</p><p>27</p>
+        <p>Item 6.</p><p>Exhibits</p><p>28</p>
+        <hr>
+        <p>ITEM 1. FINANCIAL STATEMENTS</p><p>3</p>
+        <p>Net cash provided by operating activities 389,955</p>
+        """)
+        assert section_of(doc.text, doc.text.index("389,955")) == "Item 1. FINANCIAL STATEMENTS"
+
+    def test_contents_that_restart_at_each_part_are_still_contents(self):
+        from basin.documents.text import parse, section_of
+
+        # A 10-Q lists Part I as 1-4 and then Part II from 1 again. Reading the
+        # restart as the end of the contents left Chesapeake's balance sheet
+        # under "Item 4. Controls and Procedures".
+        doc = parse("""
+        <p>Item 1.</p><p>Financial Statements</p>
+        <p>Item 2.</p><p>MD&amp;A</p><p>63</p>
+        <p>Item 3.</p><p>Market Risk</p><p>95</p>
+        <p>Item 4.</p><p>Controls and Procedures</p><p>102</p>
+        <p>Item 1.</p><p>Legal Proceedings</p><p>103</p>
+        <p>Item 1A.</p><p>Risk Factors</p><p>103</p>
+        <p>Item 2.</p><p>Unregistered Sales</p><p>103</p>
+        <p>Item 6.</p><p>Exhibits</p><p>104</p>
+        <hr>
+        <p>Total assets 1,234</p>
+        """)
+        assert section_of(doc.text, doc.text.index("1,234")) == "Item 1. Financial Statements"
+
+    def test_a_lone_heading_above_a_folio_is_not_read_as_contents(self):
+        from basin.documents.text import parse, section_of
+
+        # "Item 6. [Reserved]" carries nothing but the page number printed
+        # under it, which looks exactly like a contents row on its own. Only a
+        # run of such rows is a table of contents.
+        doc = parse("<p>Item 6.</p><p>Reserved</p><p>64</p><hr><p>x 1,234</p>")
+        assert section_of(doc.text, doc.text.index("1,234")) == "Item 6. Reserved"
 
 
 class TestHeaderCoverageFixes:

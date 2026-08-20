@@ -211,7 +211,14 @@ def main(argv: list[str] | None = None) -> int:
 
     sql = """
         SELECT f.id, f.cik, f.concept_key, f.value, f.unit, f.period_end,
-               f.accession, f.form
+               f.accession, f.form,
+               -- locate_fact matches the filing's markup on these two. They
+               -- were missing from this list while it read them, so every
+               -- markup match ran on value and period alone -- and the guard
+               -- in match_fact that refuses a figure carrying the wrong
+               -- concept is written as `if concept_tag`, so withholding the
+               -- tag turned it off.
+               f.tag, f.product
         FROM fact_current f
         WHERE f.period_end >= ?
     """

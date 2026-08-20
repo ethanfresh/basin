@@ -1,59 +1,81 @@
 # Deploying
 
 The dashboard serves a store it never writes. Ingestion runs on a workstation;
-the result is copied to the host as a finished artifact. That asymmetry is what
-makes the deployment small — the 50GB+ corpus under `data/corpus` is an
-ingestion input and never reaches the host at all.
+what reaches the host is a build artifact, not the working database.
+
+The working store is two databases wearing one filename. `document_line` and
+its full-text index are the parsed corpus — ~3GB, 13M rows, the input to
+verification and table extraction. The facts they produce, with every citation
+the dashboard renders, are ~15MB. `basin.store.queries` — the only module the
+web app talks to — names neither document table.
 
 | | Size | On the host? |
 |---|---|---|
-| `data/basin.db` | ~3.5GB, growing | yes, on the volume |
 | `data/corpus/` | 50GB+ | no |
+| `data/basin.db` | ~3.2GB, growing | no |
+| ├ `document_line` + FTS | ~3.1GB | no |
+| └ facts, citations, verification | ~15MB | **yes, inside the image** |
 | `data/cache/` | ~300MB | no |
+
+That asymmetry is what keeps the deployment stateless. There is no volume, so
+nothing pins the app to one machine in one region, and a deploy is the whole
+update mechanism — no upload-and-swap between building a store and serving it.
+
+## Where the working data lives
+
+`data/` is not in the checkout. It is a symlink to a store kept outside it —
+26GB of database, corpus and cache does not belong in a git working tree, and
+`git status` should not have to ignore it:
+
+```
+ln -s ~/BasinData /path/to/basin/data
+```
+
+Scripts default to `data/basin.db` and follow the link. `BASIN_DB` overrides
+that for both the web app and every script in `scripts/`, which take it as
+their `--store`/`--db` default. Precedence is flag, then environment, then
+`data/basin.db`.
+
+## Shipping
+
+```
+python scripts/build_serving_store.py     # -> build/serving.db, ~15MB
+fly deploy
+```
+
+`build_serving_store.py` copies every table except the document index into a
+fresh database carrying the full schema, so the two omitted tables are present
+and empty rather than missing — a query that reaches for them on the host
+returns no rows instead of raising. It runs `PRAGMA foreign_key_check` before
+it will hand back a store.
+
+It reads the source read-only and writes a new file, so it is safe to run while
+an ingest holds a transaction: it never sees a hot journal the way `cp` does.
+
+`build/` is gitignored and excepted from the `*.db` rule in `.dockerignore`,
+which is the one path by which a database enters the build context.
+
+The health check is `GET /api/cohorts` rather than `HEAD /`. With the store in
+the image there is no window where the app is up but has no data, so the check
+can prove the store opens rather than only that the process is listening. On a
+machine without a store the `/api/*` routes answer 503 naming the path they
+looked at.
 
 ## First deploy
 
 ```
 fly launch --no-deploy --name basin
-fly volumes create basin_data --size 5 --region iad
 fly deploy
 ```
 
-5GB leaves room for the store plus a second copy during a swap. The volume
-pins the app to one machine in one region; `fly.toml` sets no scaling because
-a volume cannot be shared between machines.
-
-The machine comes up healthy with an empty volume. That is deliberate: the
-health check is `HEAD /`, which touches no store, so the machine stays up long
-enough to receive one. Until then the `/api/*` routes answer 503 naming the
-path they looked at.
-
-## Shipping a store
-
-The read-only path applies no schema migration, so the file has to be current
-before it leaves the workstation. Opening it with `connect()` runs the column
-migration; `connect_readonly()` deliberately does not.
-
-```
-python -c "from basin.store import connect; connect('data/basin.db').close()"
-sqlite3 data/basin.db "VACUUM INTO 'data/ship.db'"
-fly sftp shell -C "put data/ship.db /data/basin.db.new"
-fly ssh console -C "mv /data/basin.db.new /data/basin.db"
-fly apps restart basin
-```
-
-`VACUUM INTO` rather than `cp`: it takes a consistent snapshot even while an
-ingest script holds a transaction, and it compacts free pages, so the shipped
-file is smaller than the working one. Copying the file directly while a writer
-is mid-transaction captures a hot journal, and a `mode=ro` connection cannot
-roll one back — every read then fails with "attempt to write a readonly
-database". Restarting is what drops the old connections; the rename alone
-leaves them on the unlinked inode.
+No volume to create, and no region to pin. `min_machines_running = 0` in
+`fly.toml` trades a cold start for not paying to sit idle; raise it, or add
+regions, without anything to keep in sync.
 
 ## The corpus
 
-Only ingestion reads it, so it belongs on object storage rather than the
-volume:
+Only ingestion reads it, and it is the largest thing on the workstation's disk,
+so it belongs on object storage:
 
 ```
 fly storage create
@@ -63,9 +85,3 @@ Every function in `basin/documents/corpus.py` takes a `root:` parameter, which
 is the seam to point at a bucket. `GET /debug/page/...` is the one route that
 reads the corpus and will 404 on the host — it is a development aid, not part
 of the dashboard.
-
-## Configuration
-
-`BASIN_DB` sets the store location for both the web app and every script in
-`scripts/`, which take it as their `--store`/`--db` default. Precedence is
-flag, then environment, then `data/basin.db`.

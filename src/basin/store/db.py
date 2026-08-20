@@ -49,6 +49,7 @@ def connect(path: Path | str = DEFAULT_DB_PATH, *, create: bool = True) -> sqlit
         # hard error. On a fresh store there is no table to alter, and the
         # migration skips it -- so this order is correct in both directions.
         _add_missing_columns(conn)
+        _drop_views(conn)
         conn.executescript(schema_sql())
         conn.commit()
     return conn
@@ -105,6 +106,25 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "scale_declared": "INTEGER",
     },
 }
+
+
+def _drop_views(conn: sqlite3.Connection) -> None:
+    """Drop every view, so schema.sql's definitions are the ones in force.
+
+    The views are declared CREATE VIEW IF NOT EXISTS, which reads as "make sure
+    this exists" and means "keep whatever is already there". A view holds no
+    data, so its definition in the file is the only copy that matters -- but a
+    store created before an edit kept the old text forever, and the correction
+    reached new databases only. Editing reserve_consistency and seeing nothing
+    change is how that surfaced. They are cheap to rebuild, so they are.
+    """
+    views = [
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'view'"
+        )
+    ]
+    for name in views:
+        conn.execute(f'DROP VIEW IF EXISTS "{name}"')
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:

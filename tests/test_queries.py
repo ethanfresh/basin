@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from basin.facts.xbrl import FactRow
-from basin.store import connect, insert_facts, record_filing, upsert_company
+from basin.store import (
+    connect,
+    insert_facts,
+    record_filing,
+    record_verification,
+    upsert_company,
+)
 from basin.store.queries import filing_url, panel, panel_wide, summary, unit_groups
 
 
@@ -136,6 +142,42 @@ class TestSummary:
         assert s["latest_period"] == "2024-12-31"
 
 
+class TestPanelVerdicts:
+    """A cell carries the verdict, not just whether it was favourable.
+
+    The panel colours a figure checked against its filing and not located
+    differently from one nothing has checked yet. Collapsing both to "not
+    verified" told a reader that unfinished work and a dead end were the same
+    finding.
+    """
+
+    def test_a_cell_carries_the_verification_verdict(self, conn):
+        insert_facts(conn, [_row("0001539838", 100.0, "MBoe")])
+        fact_id = conn.execute("SELECT id FROM fact").fetchone()[0]
+        record_verification(conn, fact_id, "found", page=12, printed="100")
+
+        cell = _cell(conn, "0001539838")
+        assert cell["verify_status"] == "found"
+        assert cell["verified"] is True
+
+    def test_checked_and_not_located_is_not_unchecked(self, conn):
+        insert_facts(conn, [_row("0001090012", 200.0, "MBoe")])
+        fact_id = conn.execute("SELECT id FROM fact").fetchone()[0]
+        record_verification(conn, fact_id, "not_found")
+
+        cell = _cell(conn, "0001090012")
+        assert cell["verified"] is False
+        # The distinction the colour depends on: a verdict, not a blank.
+        assert cell["verify_status"] == "not_found"
+
+    def test_an_unchecked_cell_has_no_verdict(self, conn):
+        insert_facts(conn, [_row("0000717423", 300.0, "MBoe")])
+
+        cell = _cell(conn, "0000717423")
+        assert cell["verified"] is False
+        assert cell["verify_status"] is None
+
+
 class TestPanelMembership:
     """The panel shows the cohort, not everything the store happens to hold."""
 
@@ -183,3 +225,9 @@ class TestPanelMembership:
                        cohort="Oil & Gas Integrated")
         assert [r["ticker"] for r in panel_wide(mixed, cohort="Oil & Gas E&P")["rows"]] == ["FANG"]
         assert [r["ticker"] for r in panel_wide(mixed, cohort="Oil & Gas Integrated")["rows"]] == ["MUR"]
+
+
+def _cell(conn, cik, concept="proved_developed_reserves_boe"):
+    rows = [r for r in panel_wide(conn)["rows"] if r["cik"] == cik]
+    assert len(rows) == 1
+    return rows[0]["cells"][concept]

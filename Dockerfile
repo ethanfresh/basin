@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=8080 \
-    BASIN_DB=/data/basin.db
+    BASIN_DB=/app/serving.db
 
 WORKDIR /app
 
@@ -17,9 +17,17 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir '.[web]'
 
-# A placeholder for the mount. Without it the app resolves BASIN_DB to a path
-# whose parent does not exist and reports 503 rather than a mount failure.
-RUN mkdir -p /data
+# The store ships in the image. It is ~15MB -- the facts, citations and
+# verification rows the dashboard reads, without the ~3GB document index that
+# only ingestion touches -- so there is no volume to mount, nothing pinning the
+# app to one machine, and no upload-and-swap between building a store and
+# serving it. Build it first:
+#
+#     python scripts/build_serving_store.py
+#
+# Last layer because it is the one that changes on every data refresh; the
+# dependency install above stays cached.
+COPY build/serving.db ./serving.db
 
 EXPOSE 8080
 CMD ["python", "-m", "basin.web"]
