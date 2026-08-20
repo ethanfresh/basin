@@ -371,3 +371,63 @@ class TestCompanyColumn:
         from basin.documents.tables import company_column
 
         assert company_column(["North", "South"]) is None
+
+
+class TestSingleProductTableNamingItsProduct:
+    """"No product named" and "this is the equivalent total" are not the same."""
+
+    # ConocoPhillips, FY2025 10-K: one table per product, the product named two
+    # rows above the unit, and the scope split across the columns.
+    CRUDE = _table(
+        "<tr><td>Proved Reserves</td></tr>"
+        "<tr><td>Years Ended December 31</td><td>Crude Oil</td></tr>"
+        "<tr><td>Millions of Barrels</td></tr>"
+        "<tr><td>Alaska</td><td>Lower 48</td><td>Total U.S.</td>"
+        "<td>Total Consolidated Operations</td><td>Equity Affiliates</td><td>Total</td></tr>"
+        "<tr><td>Developed and Undeveloped</td></tr>"
+        "<tr><td>End of 2025</td><td>900</td><td>1,400</td><td>2,300</td>"
+        "<td>3,321</td><td>90</td><td>3,411</td></tr>"
+    )
+    EQUIVALENT = CRUDE.replace(
+        "<td>Crude Oil</td>", "<td>Total Proved Reserves</td>"
+    ).replace(
+        "<td>Millions of Barrels</td>",
+        "<td>Millions of Barrels of Oil Equivalent</td>",
+    )
+
+    def test_the_product_is_read_from_a_different_header_row(self):
+        # The unit row says "Millions of Barrels", which names no product. The
+        # product is two rows above it.
+        readings = reserve_readings(self.CRUDE, fallback_period="2025-12-31")
+        assert [r.product for r in readings] == ["oil"]
+        assert readings[0].value == 3_321
+
+    def test_the_equivalent_table_stays_the_total(self):
+        readings = reserve_readings(self.EQUIVALENT, fallback_period="2025-12-31")
+        assert [r.product for r in readings] == [None]
+
+    def test_a_crude_table_does_not_collide_with_the_equivalent_one(self):
+        # Both used to resolve to the total, so a crude-only 3,321 MMBbls and a
+        # company-wide 6,506 MMBoe shared one identity and the arithmetic gate
+        # dropped the filer rather than choose between them.
+        crude = reserve_readings(self.CRUDE, fallback_period="2025-12-31")
+        equivalent = reserve_readings(self.EQUIVALENT, fallback_period="2025-12-31")
+        identity = lambda r: (r.concept_key, r.product, r.period_end)
+        assert not {identity(r) for r in crude} & {identity(r) for r in equivalent}
+
+    def test_a_column_row_saying_total_is_not_a_product_name(self):
+        # "Total U.S." is a scope. Scanning the column row for a product reads
+        # it as the oil-equivalent total and loses the real product name.
+        readings = reserve_readings(self.CRUDE, fallback_period="2025-12-31")
+        assert readings[0].product == "oil"
+
+    def test_a_table_naming_no_product_anywhere_is_refused(self):
+        # Defaulting to the equivalent total is what put a single product's
+        # figure under the company's identity.
+        html = _table(
+            "<tr><td>Proved Reserves</td></tr>"
+            "<tr><td>Millions of Barrels</td></tr>"
+            "<tr><td>Alaska</td><td>Total</td></tr>"
+            "<tr><td>End of 2025</td><td>900</td><td>3,321</td></tr>"
+        )
+        assert reserve_readings(html, fallback_period="2025-12-31") == []

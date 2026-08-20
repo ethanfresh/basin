@@ -344,6 +344,58 @@ def _column_axis(table: Table) -> list[tuple[str | None, str]] | None:
 
 _TOTAL_COLUMN = re.compile(r"(?i)^total\b")
 
+class _Unnamed:
+    """The table names no product, which is not the same as naming the total."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "UNNAMED"
+
+
+_UNNAMED = _Unnamed()
+
+
+def _table_product(
+    table: Table, product_label: str, columns: list[str]
+) -> str | None | _Unnamed:
+    """The single product a table reports, the equivalent total, or unnamed.
+
+    ``_product`` answers None for two different things -- "this column is the
+    oil-equivalent total" and "no product word here at all" -- and a
+    single-product table cannot afford to confuse them. ConocoPhillips prints
+    one table per product and heads the unit row "Millions of Barrels", which
+    names no product; taking that as the equivalent filed its crude-oil-only
+    figure of 3,321 MMBbls under the same identity as its company total of
+    6,506 MMBoe, and the arithmetic gate dropped the filer entirely rather than
+    choose between them.
+
+    The product name is often on a different header row from the unit -- COP
+    puts "Crude Oil" two rows above "Millions of Barrels" -- so every header
+    label is considered, nearest the unit row first. Every label except the
+    column row's: those name scopes, and "Total U.S." reads as an
+    oil-equivalent total to anything looking for the word total.
+    """
+    if _EQUIVALENT.search(product_label):
+        return None
+    named = _product(product_label)
+    if named is not None:
+        return named
+
+    # The unit row said nothing. Look at the rest of the header.
+    for row in reversed(table.header_rows):
+        labels = _labels(row)
+        if labels == columns:
+            continue
+        for label in labels:
+            if label == product_label:
+                continue
+            if _EQUIVALENT.search(label):
+                return None
+            found = _product(label)
+            if found is not None:
+                return found
+    return _UNNAMED
+
+
 def _single_product_axis(table: Table) -> list[tuple[str | None, str]] | None:
     """Axis for a table that states one product and splits columns another way.
 
@@ -371,8 +423,9 @@ def _single_product_axis(table: Table) -> list[tuple[str | None, str]] | None:
     unit = _canonical_unit(product_label)
     if unit is None:
         return None
-    product = _product(product_label)
-    if product == AMBIGUOUS:
+
+    product = _table_product(table, product_label, columns)
+    if product is _UNNAMED or product == AMBIGUOUS:
         return None
 
     chosen = company_column(columns)
