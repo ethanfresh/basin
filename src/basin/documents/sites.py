@@ -120,7 +120,14 @@ PRODUCTION = TableSpec(
     match=(
         '"average sales price" OR "average sales prices" '
         'OR "average production cost" OR "average production costs" '
-        'OR "production cost per" OR "sales price per"'
+        'OR "production cost per" OR "sales price per" '
+        # The unit-cost table, which is how most of the cohort discloses cost
+        # per barrel. Without these the query reached a cost row for 36 filers
+        # of 91 while 52 print "per boe" beside an operating expense.
+        'OR "lease operating expense per" OR "lease operating expenses per" '
+        'OR "operating expense per" OR "operating expenses per" '
+        'OR "operating costs per" OR "production expense per" '
+        'OR "cost per boe" OR "costs per boe" OR "lifting cost"'
     ),
     categories=(
         # Filers do not all say "sales price". Diamondback heads its column
@@ -132,8 +139,10 @@ PRODUCTION = TableSpec(
             r"|sales?\s+price\s+per\b")),
         ("cost", re.compile(
             r"(?i)average\s+production\s+costs?|production\s+costs?\W+per"
-            r"|average\s+costs?\s+per\b"
-            r"|lease\s+operating\s+(?:expenses?|costs?)\W+per")),
+            r"|(?:average\s+)?(?:unit\s+)?costs?\W*(?:and\s+expenses\s+)?"
+            r"\W*per\s+\w*(?:boe|mcfe?|bbl|barrel)"
+            r"|(?:lease\s+operating|operating|production)\s+(?:expenses?|costs?)"
+            r"\W+per\b|\blifting\s+costs?\b")),
         # The lookahead is load-bearing. Without it "Production Cost (Per Boe)"
         # -- Devon's own row label -- matches as a volume, and a dollars-per-
         # barrel figure is proposed as a production quantity. A category is

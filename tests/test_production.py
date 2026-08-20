@@ -216,3 +216,89 @@ class TestFiscalYearEnd:
 
     def test_december_remains_the_default(self):
         assert "2025-12-31" in {r.period_end for r in production_readings(PRODUCTION_TABLE)}
+
+
+class TestCostDenominator:
+    """A per-unit cost is meaningless without knowing what it is per."""
+
+    def test_a_per_mcfe_cost_is_not_stored_as_per_boe(self):
+        # Gas-weighted filers quote "($/Mcfe)". $0.06 per Mcfe recorded as
+        # $0.06 per BOE is off by six and lands two orders of magnitude below
+        # every peer in the column.
+        html = _table("""
+            Average Production Costs ($/Mcfe) | 0.06 | 0.05
+        """)
+        r = _find(production_readings(html), COST)
+        assert (r.value, r.unit) == (pytest.approx(0.06), "USD/Mcfe")
+
+    def test_the_heading_supplies_the_denominator_for_its_rows(self):
+        # A unit-cost table names the denominator once and its rows name only
+        # the cost. This is how most of the cohort discloses it.
+        html = _table("""
+            Average cost per Boe: | |
+            Lease operating expense | 12.60 | 13.56
+        """)
+        r = _find(production_readings(html), COST)
+        assert (r.value, r.unit) == (pytest.approx(12.60), "USD/Boe")
+
+    def test_a_cost_with_no_stated_denominator_is_refused(self):
+        # Neither row nor heading says what it is per, so it cannot be compared
+        # with anything -- which is the only thing a per-unit cost is for.
+        html = _table("""
+            Production costs | 12.60 | 13.56
+        """)
+        assert [r for r in production_readings(html) if r.concept_key == COST] == []
+
+    def test_a_denominator_that_is_not_a_quantity_is_refused(self):
+        # "Production cost per sales dollar" is a margin ratio. Stored as
+        # USD/Boe it reads as a producer lifting barrels for four cents.
+        html = _table("""
+            Production cost per sales dollar | 0.04 | 0.05
+        """)
+        assert [r for r in production_readings(html) if r.concept_key == COST] == []
+
+
+class TestLiftingCostRow:
+    """Inside a unit-cost section only one row is the panel's cost column."""
+
+    SECTION = _table("""
+        Average cost per Boe: | |
+        Lease operating expense | 12.60 | 13.56
+        Gathering, processing and transportation | 3.10 | 3.20
+        Production and ad valorem taxes | 1.80 | 1.90
+        Depreciation, depletion and amortization | 18.40 | 17.90
+        General and administrative | 2.20 | 2.40
+        Total operating expenses | 38.10 | 38.96
+    """)
+
+    def test_only_the_lifting_cost_row_is_taken(self):
+        costs = [r for r in production_readings(self.SECTION) if r.concept_key == COST]
+        assert [r.value for r in costs] == [
+            pytest.approx(12.60), pytest.approx(13.56),
+        ]
+
+    def test_depletion_does_not_become_a_production_cost(self):
+        # DD&A is the largest row in the section and would sit beside real
+        # lifting costs at roughly half again their value.
+        values = [r.value for r in production_readings(self.SECTION)
+                  if r.concept_key == COST]
+        assert 18.40 not in values
+
+    def test_a_total_row_is_not_the_lifting_cost(self):
+        values = [r.value for r in production_readings(self.SECTION)
+                  if r.concept_key == COST]
+        assert 38.10 not in values
+
+    def test_midstream_and_tax_rows_are_excluded(self):
+        values = [r.value for r in production_readings(self.SECTION)
+                  if r.concept_key == COST]
+        assert 3.10 not in values and 1.80 not in values
+
+    def test_a_one_line_s_k_1204_cost_still_works(self):
+        # The other layout: the row states the cost and its denominator, with
+        # no section above it. Both must keep working from one code path.
+        html = _table("""
+            Average production cost, per BOE | 12.60 | 13.56
+        """)
+        r = _find(production_readings(html), COST)
+        assert (r.value, r.unit) == (pytest.approx(12.60), "USD/Boe")

@@ -70,6 +70,15 @@ _SECTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?i)average\s+production\s+costs?"
             r"|production\s+costs?\s+per\b"
             r"|(?:direct\s+)?(?:lease\s+operating\s+expense|LOE)[^.]{0,40}\bper\b"
+            # The unit-cost table: a heading that names the denominator once
+            # and lists the cost components beneath it. This is how most of the
+            # cohort discloses it -- "Average cost per Boe:", "Costs and
+            # Expenses (per Boe):", "Operating Expenses (per BOE):" -- and
+            # matching only the S-K 1204 phrasing reached 36 filers of 91.
+            r"|(?:average\s+)?(?:unit\s+)?costs?\s+(?:and\s+expenses\s+)?"
+            r"(?:\(?\s*(?:in\s+)?\$?\s*)?per\s+\w*(?:boe|mcfe?|bbl|barrel)"
+            r"|(?:operating|production)\s+expenses?\s*\(?\s*\$?\s*per\s+"
+            r"\w*(?:boe|mcfe?|bbl|barrel)"
         ),
     ),
     (PRICE, re.compile(r"(?i)average\s+(?:realized\s+|net\s+)?sales?\s+price"
@@ -110,7 +119,26 @@ _PRICE_UNIT = {
     "gas": "USD/Mcf",
     None: "USD/Boe",
 }
-COST_UNIT = "USD/Boe"
+# The denominator a per-unit cost is quoted against, read from the row or its
+# section heading. Hard-coding USD/Boe was wrong for a real and common case:
+# gas-weighted filers quote "Average Production Costs ($/Mcfe)", and $0.06 per
+# Mcfe stored as $0.06 per BOE is off by six and lands two orders of magnitude
+# below every peer -- a number no reader would trust and none should.
+_COST_UNITS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bmcfe\b|per\s+thousand\s+cubic\s+feet\s+equivalent"), "USD/Mcfe"),
+    (re.compile(r"(?i)\bmcf\b|per\s+thousand\s+cubic\s+feet"), "USD/Mcf"),
+    (re.compile(r"(?i)\bboe\b|barrels?\s+of\s+oil\s+equivalent"
+                r"|oil[\s-]equivalent\s+barrels?|equivalent\s+barrels?"), "USD/Boe"),
+    (re.compile(r"(?i)per\s+(?:net\s+)?(?:bbl|barrels?)\b"), "USD/bbl"),
+)
+
+# Denominators that are not a quantity of hydrocarbon. "Production cost per
+# sales dollar" is a margin ratio and belongs in no per-unit cost column;
+# stored as USD/Boe it reads as a producer lifting barrels for four cents.
+_NOT_A_QUANTITY = re.compile(
+    r"(?i)per\s+(?:sales\s+)?dollar|per\s+share|per\s+unit\b(?!\s+of\s+production)"
+    r"|\bpercent|%|per\s+ton\b|per\s+acre\b|per\s+well\b"
+)
 
 # The volume unit a price's denominator refers to. "USD/Mcf" x a volume in Mcf
 # is revenue; x a volume in BOE is nothing.
@@ -170,6 +198,29 @@ _CURRENCY_ONLY = re.compile(r"^[\$\s%()]*$")
 # quantity. Reading it as one puts 70 in a production column.
 _PERCENT = re.compile(r"(?i)percent|%\s*$|\bmix\b")
 
+# Inside a unit-cost section the rows are the cost components, and only one of
+# them is the lifting cost the panel column means. Taking every row would put
+# depletion and corporate overhead in a production-cost column, where they
+# would sit beside real lifting costs at two to three times the value.
+_LIFTING_COST = re.compile(
+    r"(?i)^\s*(?:average\s+|total\s+|direct\s+|net\s+|cash\s+)*"
+    r"(?:lease\s+operating(?:\s+expenses?|\s+costs?)?"
+    r"|\bLOE\b|lifting\s+costs?"
+    r"|production\s+(?:costs?|expenses?)"
+    r"|operating\s+(?:costs?|expenses?))\b"
+)
+
+# Components that are not lifting cost, tested first because several of them
+# contain words the pattern above accepts -- "Depletion expense", "General and
+# administrative expense", "Total operating expenses".
+_NOT_LIFTING = re.compile(
+    r"(?i)deprecia|deplet|amorti|\bDD&A\b|general\s+and\s+admin|\bG&A\b"
+    r"|interest|explorat|impair|accretion|income\s+tax|share[\s-]based"
+    r"|gathering|transport|processing|marketing|midstream"
+    r"|severance|ad\s+valorem|production\s+tax|\btaxes\b"
+    r"|^\s*total\b|revenue|\bnetback\b|realized|\bprice\b"
+)
+
 
 @dataclass(frozen=True)
 class ProductionReading:
@@ -217,6 +268,26 @@ def _product(label: str) -> str | None:
             ):
                 return None
             return name
+    return None
+
+
+def _cost_unit(label: str, section_label: str) -> str | None:
+    """What a per-unit cost is quoted per, from the row or its heading.
+
+    The row is read first and the heading second: a unit-cost table states the
+    denominator once in its heading ("Average cost per Boe:") and its rows name
+    only the cost, while an S-K 1204 table states it on the row itself
+    ("Average production cost, per BOE"). Returns None when neither says, and
+    when what they say is not a quantity of hydrocarbon.
+    """
+    for text in (label, section_label):
+        if not text:
+            continue
+        if _NOT_A_QUANTITY.search(text):
+            return None
+        for pattern, unit in _COST_UNITS:
+            if pattern.search(text):
+                return unit
     return None
 
 
@@ -324,6 +395,11 @@ def readings_for_table(table: Table, raw: str) -> list[ProductionReading]:
             continue
         if _PERCENT.search(label) or any("%" in c for c in cells):
             continue
+        if metric == COST and not one_line:
+            # A row inside a cost section. Only the lifting-cost line is this
+            # column; the rest of the section is depletion, overhead and taxes.
+            if _NOT_LIFTING.search(label) or not _LIFTING_COST.match(label):
+                continue
         if len(values) != len(years):
             # The row does not line up with the year columns. Guessing which
             # figure belongs to which year is exactly the silent error the
@@ -331,10 +407,23 @@ def readings_for_table(table: Table, raw: str) -> list[ProductionReading]:
             continue
 
         product = _product(label)
+        if metric == COST:
+            # A per-unit cost is a company-level rate, and its label names a
+            # denominator rather than a product: "Average Production Costs
+            # ($/Mcfe)" is not a gas cost, but "Mcfe" contains "Mcf" and was
+            # read as one. Where a filer really does report cost by product --
+            # Suncor splits bitumen from synthetic crude -- the row label is
+            # kept as the basis rather than made part of the cell's identity.
+            product = None
         if metric == PRICE:
             unit = _PRICE_UNIT[product]
         elif metric == COST:
-            unit = COST_UNIT
+            unit = _cost_unit(label, section_label)
+            if unit is None:
+                # Neither the row nor its heading says what the cost is per.
+                # A per-unit cost whose denominator is a guess cannot be
+                # compared with anything, which is the only thing it is for.
+                continue
         else:
             unit = _volume_unit(label) or ""
             if not unit:

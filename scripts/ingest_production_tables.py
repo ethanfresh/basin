@@ -89,6 +89,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cik", action="append", help="limit to these CIKs")
     parser.add_argument("--limit", type=int, help="stop after N documents")
     parser.add_argument("--form", action="append", default=[])
+    parser.add_argument(
+        "--replace", action="store_true",
+        help="delete this extractor's previous rows before writing. Use when "
+             "the extractor itself has changed: inserts conflict-and-skip, so "
+             "a re-run cannot correct a row it wrote under older rules",
+    )
     return parser.parse_args(argv)
 
 
@@ -177,6 +183,33 @@ def choose_table(
     return merged, "identical tables"
 
 
+SOURCE = "table:production"
+
+
+def _replace_previous(conn) -> int:
+    """Delete every row this extractor wrote, and what depends on them.
+
+    The fact store is append-only and inserts conflict-and-skip, which is right
+    for ingesting the same filing twice and wrong for an extractor whose rules
+    have changed: the row written under the old rules stays, and the corrected
+    one cannot replace it. A cost of $0.06 per Mcfe stored as $0.06 per BOE
+    does not go away by re-running.
+
+    Safe because these rows are derived: every one is reproducible from a
+    document already in the corpus, which is not true of anything else here.
+    """
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM fact WHERE extracted_by = ?", (SOURCE,)
+    )]
+    with conn:
+        for table in ("fact_verification", "fact_scale", "vision_check"):
+            conn.executemany(
+                f"DELETE FROM {table} WHERE fact_id = ?", [(i,) for i in ids]
+            )
+        conn.executemany("DELETE FROM fact WHERE id = ?", [(i,) for i in ids])
+    return len(ids)
+
+
 def _is_power_of_ten(ratio: float) -> bool:
     """Whether two figures differ only by a factor of 10, 100, 1000 ..."""
     import math
@@ -185,6 +218,35 @@ def _is_power_of_ten(ratio: float) -> bool:
         return False
     exponent = math.log10(ratio)
     return abs(exponent - round(exponent)) < 1e-6 and round(exponent) != 0
+
+
+def _unambiguous_costs(
+    candidates: list[list[ProductionReading]]
+) -> tuple[list[ProductionReading], str]:
+    """Cost readings that no scope question hangs over.
+
+    Cost is safe to keep when the document states it once: either one table
+    carries cost rows, or several do and they agree cell for cell, which is a
+    filing repeating itself. Where they disagree the scope question is real
+    after all -- one of them is a field or a segment -- and nothing is kept.
+    """
+    with_costs = [
+        [r for r in readings if r.concept_key == COST]
+        for readings in candidates
+    ]
+    with_costs = [c for c in with_costs if c]
+    if not with_costs:
+        return [], "no cost rows"
+    if len(with_costs) == 1:
+        return with_costs[0], "only one table states a cost"
+
+    def cells(rs):
+        return {(r.product, r.period_end, r.unit): round(r.value, 6) for r in rs}
+
+    first = cells(with_costs[0])
+    if all(cells(other) == first for other in with_costs[1:]):
+        return with_costs[0], "several tables state the same cost"
+    return [], "tables state different costs"
 
 
 def _prefer_unhedged(readings: list[ProductionReading]) -> list[ProductionReading]:
@@ -256,6 +318,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     }
 
+    if args.replace and not args.dry_run:
+        removed = _replace_previous(conn)
+        print(f"replacing {removed:,} rows written by a previous run\n")
+
     counts: collections.Counter = collections.Counter()
     agree = disagree = rescaled = 0
     mismatches: list[str] = []
@@ -278,6 +344,19 @@ def main(argv: list[str] | None = None) -> int:
             volume.get(site.cik or "", {}),
         )
         counts[f"table choice: {why.split(' (')[0]}"] += 1
+
+        # Table choice settles which table is the *company's* production, and
+        # that question is about volume and price: a filing prints those per
+        # segment as well as consolidated, and the tables are indistinguishable
+        # from inside. A per-unit cost table is not part of that ambiguity --
+        # it states a rate, not a scope, and most filings carry exactly one.
+        # Dropping the whole document when the volume tables cannot be told
+        # apart discarded cost rows that were never in question, for twelve
+        # filers including CNX, Gulfport, Chord, Matador and SM.
+        costs, cost_why = _unambiguous_costs(candidates)
+        if costs and not any(r.concept_key == COST for r in readings):
+            counts[f"cost kept separately: {cost_why}"] += 1
+            readings = readings + costs
         if not readings:
             continue
 
@@ -345,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 filed=site.filed_date,
                 # Named for the mechanism: a reader deciding whether to trust a
                 # cell needs to know it was read off a table, not tagged.
-                extracted_by="table:production",
+                extracted_by=SOURCE,
                 source_span=reading.source_span,
                 section=reading.section_label or reading.row_label,
                 is_hedged=reading.is_hedged,
