@@ -230,3 +230,144 @@ class TestDevelopedComponents:
             r.value == 953_343 and r.concept_key == "proved_developed_reserves_boe"
             for r in readings
         )
+
+
+class TestSpelledMagnitudes:
+    """The majors do not abbreviate, and the abbreviation is inside the words."""
+
+    def test_million_barrels_is_not_barrels(self):
+        # "(million bbls)" contains "bbls". Searching for the token before the
+        # spelled magnitude answered `bbl`, turning ExxonMobil's 1,552 million
+        # barrels into 1,552 barrels -- a millionfold error, in the header of
+        # every table the majors publish.
+        from basin.documents.reserves import _canonical_unit
+
+        assert _canonical_unit("(million bbls)") == "MMBbls"
+        assert _canonical_unit("(billion cubic ft)") == "Bcf"
+        assert _canonical_unit("(thousands of barrels)") == "MBbls"
+
+    def test_a_bare_abbreviation_still_resolves(self):
+        from basin.documents.reserves import _canonical_unit
+
+        assert _canonical_unit("(MMBbls)") == "MMBbls"
+        assert _canonical_unit("Total (MBOE)") == "MBoe"
+
+
+class TestProductsBasinDoesNotModel:
+    def test_bitumen_and_synthetic_crude_are_ambiguous_not_oil(self):
+        # ExxonMobil and the Canadian integrateds column them separately.
+        # Folding them into oil puts three columns on one cell where the last
+        # silently wins; naming them ambiguous drops those columns and keeps
+        # the crude, NGL, gas and equivalent ones.
+        from basin.documents.reserves import AMBIGUOUS, _product
+
+        assert _product("Bitumen") == AMBIGUOUS
+        assert _product("Synthetic Oil") == AMBIGUOUS
+        assert _product("Crude Oil") == "oil"
+
+
+class TestClosingRowNamingItsYear:
+    def test_end_of_2023_is_a_period(self):
+        # ConocoPhillips writes "End of 2023" where most write "End of year",
+        # stacking several years in one block. Unmatched, every row of that
+        # table resolves to no period and is dropped.
+        from basin.documents.reserves import _row_period
+
+        assert _row_period("End of 2023", "2025-12-31") == "2023-12-31"
+        assert _row_period("End of year", "2025-12-31") == "2025-12-31"
+
+    def test_the_filers_fiscal_close_is_kept(self):
+        from basin.documents.reserves import _row_period
+
+        assert _row_period("End of 2023", "2025-09-30") == "2023-09-30"
+
+
+class TestBareCategoryHeadings:
+    # ExxonMobil, FY2025 10-K: the table says "Proved Reserves" once and then
+    # heads its blocks "Developed" and "Undeveloped". The rows whose arithmetic
+    # closes are the section totals, not the "Total Consolidated" row above
+    # each, which is a narrower scope closing against nothing in the table.
+    EXXON = _table(
+        "<tr><td>Proved Reserves</td><td>Crude Oil</td><td>Natural Gas</td>"
+        "<td>Oil-Equivalent Total</td></tr>"
+        "<tr><td></td><td>(million bbls)</td><td>(billion cubic ft)</td>"
+        "<td>(million bbls)</td></tr>"
+        "<tr><td>Developed</td><td></td><td></td><td></td></tr>"
+        "<tr><td>Total Consolidated</td><td>4,229</td><td>17,078</td><td>10,722</td></tr>"
+        "<tr><td>Total Developed</td><td>4,705</td><td>22,890</td><td>12,304</td></tr>"
+        "<tr><td>Undeveloped</td><td></td><td></td><td></td></tr>"
+        "<tr><td>Total Consolidated</td><td>3,316</td><td>8,596</td><td>5,860</td></tr>"
+        "<tr><td>Total Undeveloped</td><td>3,482</td><td>13,518</td><td>7,007</td></tr>"
+        "<tr><td>Total Proved Reserves</td><td>8,187</td><td>36,408</td><td>19,311</td></tr>"
+    )
+
+    def test_a_bare_heading_names_the_category_in_a_proved_table(self):
+        readings = reserve_readings(self.EXXON, fallback_period="2025-12-31")
+        got = {
+            r.concept_key: r.value
+            for r in readings
+            if r.product is None and r.period_end == "2025-12-31"
+        }
+        assert got["proved_developed_reserves_boe"] == 12_304
+        assert got["proved_undeveloped_reserves_boe"] == 7_007
+        assert got["proved_reserves_boe"] == 19_311
+
+    def test_the_section_totals_are_the_rows_whose_identity_closes(self):
+        readings = reserve_readings(self.EXXON, fallback_period="2025-12-31")
+        got = {
+            r.concept_key: r.value
+            for r in readings
+            if r.product is None and r.period_end == "2025-12-31"
+        }
+        assert (
+            got["proved_developed_reserves_boe"]
+            + got["proved_undeveloped_reserves_boe"]
+            == got["proved_reserves_boe"]
+        )
+
+    def test_the_magnitude_survives_the_spelled_header(self):
+        readings = reserve_readings(self.EXXON, fallback_period="2025-12-31")
+        oil = next(r for r in readings if r.product == "oil"
+                   and r.concept_key == "proved_reserves_boe")
+        assert oil.unit == "MMBbls"
+
+    def test_a_bare_heading_alone_is_not_enough(self):
+        # Outside a table that has said "proved", "Developed" is far too
+        # common a word to read as a reserve category.
+        html = _table(
+            "<tr><td>Costs Incurred</td><td>Total</td></tr>"
+            "<tr><td>Developed</td><td>8,532</td></tr>"
+        )
+        assert reserve_readings(html, fallback_period="2025-12-31") == []
+
+
+class TestCompanyColumn:
+    """Which column of a geography-split table is the whole company."""
+
+    def test_a_regional_subtotal_is_not_the_company(self):
+        # ConocoPhillips heads ten columns with three that start "Total".
+        # Storing all three files Alaska-plus-Lower-48 under the company's
+        # identity beside the company's own figure, and no arithmetic notices,
+        # because each is internally consistent.
+        from basin.documents.tables import company_column
+
+        labels = ["Alaska", "Lower 48", "Total U.S.", "Canada",
+                  "Total Consolidated Operations", "Equity Affiliates", "Total"]
+        assert company_column(labels) == 4
+
+    def test_a_single_total_is_taken(self):
+        from basin.documents.tables import company_column
+
+        assert company_column(["Canada", "United States", "Total"]) == 2
+
+    def test_two_indistinguishable_totals_are_refused(self):
+        # A figure attributed to the wrong scope is worse than a missing one,
+        # and invisible downstream.
+        from basin.documents.tables import company_column
+
+        assert company_column(["US", "Intl", "Total A", "Total B"]) is None
+
+    def test_no_total_is_refused(self):
+        from basin.documents.tables import company_column
+
+        assert company_column(["North", "South"]) is None

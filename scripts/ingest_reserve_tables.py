@@ -84,6 +84,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cik", action="append", help="limit to these CIKs")
     parser.add_argument("--limit", type=int, help="stop after N documents")
     parser.add_argument(
+        "--replace", action="store_true",
+        help="delete this extractor's previous rows before writing. Use when "
+             "the extractor itself has changed: inserts conflict-and-skip, so "
+             "a re-run cannot correct a row it wrote under older rules",
+    )
+    parser.add_argument(
         "--form", action="append", default=[],
         help=f"annual forms to read (default: {' '.join(ANNUAL_FORMS)})",
     )
@@ -154,6 +160,33 @@ def closes(readings: list[ReserveReading]) -> tuple[set[str], dict[str, str]]:
     return good, reasons
 
 
+SOURCE = "table:reserves"
+
+
+def _replace_previous(conn) -> int:
+    """Delete every row this extractor wrote, and what depends on them.
+
+    Necessary rather than tidy. "(million bbls)" resolved to `bbl` until the
+    spelled-magnitude patterns were tried before the bare token, so every
+    figure read from a major's header was stored a millionfold too small; a
+    re-run cannot correct that, because inserts conflict-and-skip and the wrong
+    row is already there.
+
+    Safe because these rows are derived: every one is reproducible from a
+    document already in the corpus.
+    """
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM fact WHERE extracted_by = ?", (SOURCE,)
+    )]
+    with conn:
+        for table in ("fact_verification", "fact_scale", "vision_check"):
+            conn.executemany(
+                f"DELETE FROM {table} WHERE fact_id = ?", [(i,) for i in ids]
+            )
+        conn.executemany("DELETE FROM fact WHERE id = ?", [(i,) for i in ids])
+    return len(ids)
+
+
 def _is_power_of_ten(ratio: float) -> bool:
     """Whether two figures differ only by a factor of 10, 100, 1000 ..."""
     import math
@@ -213,6 +246,10 @@ def main(argv: list[str] | None = None) -> int:
             CONCEPTS,
         )
     }
+
+    if args.replace and not args.dry_run:
+        removed = _replace_previous(conn)
+        print(f"replacing {removed:,} rows written by a previous run\n")
 
     counts: collections.Counter = collections.Counter()
     agree = disagree = rescaled = 0
@@ -330,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
                 # Named for the mechanism, not the concept: a reader deciding
                 # whether to trust a cell needs to know it was read off a table
                 # rather than identified by a tag.
-                extracted_by="table:reserves",
+                extracted_by=SOURCE,
                 source_span=reading.source_span,
                 section=reading.column_label,
             )

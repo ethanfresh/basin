@@ -240,13 +240,20 @@ def _unambiguous_costs(
     if len(with_costs) == 1:
         return with_costs[0], "only one table states a cost"
 
-    def cells(rs):
-        return {(r.product, r.period_end, r.unit): round(r.value, 6) for r in rs}
-
-    first = cells(with_costs[0])
-    if all(cells(other) == first for other in with_costs[1:]):
-        return with_costs[0], "several tables state the same cost"
-    return [], "tables state different costs"
+    # Two tables covering different years are not in conflict -- ExxonMobil
+    # prints one block per year, and requiring identical cell sets rejected the
+    # whole filing because 2024's table says nothing about 2025. Only cells
+    # both tables actually state can disagree.
+    merged: dict[tuple, ProductionReading] = {}
+    for readings in with_costs:
+        for r in readings:
+            key = (r.product, r.period_end, r.unit)
+            seen = merged.get(key)
+            if seen is None:
+                merged[key] = r
+            elif abs(seen.value - r.value) > 1e-6:
+                return [], "tables state different costs for the same period"
+    return list(merged.values()), "several tables, no overlap in disagreement"
 
 
 def _prefer_unhedged(readings: list[ProductionReading]) -> list[ProductionReading]:

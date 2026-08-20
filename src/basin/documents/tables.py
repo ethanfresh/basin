@@ -210,3 +210,59 @@ def header_for_value(
         for cell in cells_of(table):
             return cell.header, cell.row_label
     return None
+
+
+# The consolidated column of a table whose columns are places.
+#
+# The majors lay every supplemental disclosure out this way -- a column per
+# region and one for the whole company -- and the company's column is the only
+# one the panel can use: a region's figure is real, but stored under the
+# filer's identity it understates the filer by the rest of the world.
+#
+# Shared between the reserve and production extractors because the layout is
+# the filer's habit rather than the disclosure's: ExxonMobil heads its reserve
+# table "United States | Canada/Other Americas | ... | Total" and its
+# production table exactly the same way.
+_TOTAL_COLUMN_RE = re.compile(r"(?i)^\s*total\b|^\s*(?:worldwide|consolidated)\b")
+
+# A total that is really a subtotal of one region. ConocoPhillips heads ten
+# columns "Alaska | Lower 48 | Total U.S. | Canada | ... | Total Consolidated
+# Operations | Equity Affiliates | Total", and a bare "starts with total" test
+# accepts three of them. Storing all three files Alaska-plus-Lower-48 under the
+# company's identity beside the company's own figure, and no arithmetic
+# notices, because each is internally consistent.
+_REGIONAL_SUBTOTAL_RE = re.compile(
+    r"(?i)^total\s+(?:u\.?s\.?|united\s+states|canada|europe|africa|asia"
+    r"|australia|americas?|international|north\s+america|lower\s+48|alaska"
+    r"|middle\s+east|other|non[\s-]?u\.?s\.?)\b"
+)
+
+# The consolidated column, named. Preferred over a bare "Total", which usually
+# adds equity affiliates -- production the filer neither operates nor
+# consolidates -- while every other column in the panel is a consolidated
+# figure.
+_CONSOLIDATED_COLUMN_RE = re.compile(
+    r"(?i)^\s*total\s+consolidated\b|^\s*consolidated\s+total\b"
+    r"|^\s*total\s+worldwide\b|^\s*worldwide\s+total\b"
+)
+
+
+def company_column(labels: list[str]) -> int | None:
+    """Index of the one column holding the whole company, or None.
+
+    None where several columns could be it and nothing distinguishes them. A
+    figure attributed to the wrong scope is worse than a missing one and is
+    invisible downstream, because a region's numbers are as internally
+    consistent as the company's.
+    """
+    totals = [
+        index
+        for index, label in enumerate(labels)
+        if _TOTAL_COLUMN_RE.match(label) and not _REGIONAL_SUBTOTAL_RE.match(label)
+    ]
+    if not totals:
+        return None
+    if len(totals) == 1:
+        return totals[0]
+    named = [i for i in totals if _CONSOLIDATED_COLUMN_RE.match(labels[i])]
+    return named[0] if len(named) == 1 else None

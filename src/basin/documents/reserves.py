@@ -39,7 +39,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from basin.documents.tables import Table, parse_tables
+from basin.documents.tables import Table, company_column, parse_tables
 
 # Row labels that open a reserve category. Filers vary the qualifier freely
 # ("Net proved developed reserves", "Proved developed reserves", "Developed
@@ -56,6 +56,20 @@ from basin.documents.tables import Table, parse_tables
 _COMPONENT = re.compile(
     r"(?i)^\(?\d?\)?\s*(?:net\s+|total\s+|estimated\s+)*proved\s+developed"
     r"[\s,]+(?:producing|non[\s-]?producing|shut[\s-]?in|behind[\s-]pipe)"
+)
+
+# A section heading that names the category without repeating "proved",
+# usable only once the table has established that it is about proved reserves.
+# ExxonMobil titles the table "Proved Reserves" and then heads its blocks
+# "Developed" and "Undeveloped"; matched on their own these words are far too
+# common to trust, and unmatched every block of the table reads as the total,
+# so three different figures land on one cell and the conflict rule drops all
+# of them.
+_BARE_CATEGORY: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("proved_developed_reserves_boe",
+     re.compile(r"(?i)^\s*\(?\d?\)?\s*(?:total\s+|net\s+)*developed\s*[:.]?\s*$")),
+    ("proved_undeveloped_reserves_boe",
+     re.compile(r"(?i)^\s*\(?\d?\)?\s*(?:total\s+|net\s+)*undeveloped\s*[:.]?\s*$")),
 )
 
 _CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -91,7 +105,15 @@ _CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # Rows inside a category block that carry the closing balance. "End of year"
 # is the rollforward form; a bare date is the form Antero and Expand use, and
 # it names its own period, which is why it is read rather than assumed.
-_CLOSING = re.compile(r"(?i)^\s*(?:balance,?\s*)?(?:end|close|closing)\s+of\s+(?:the\s+)?(?:year|period)\b")
+# ConocoPhillips writes "End of 2023" where most filers write "End of year",
+# stacking several years in one block. The year it names is the period, and
+# without it every row of that table resolves to no period and is dropped.
+_CLOSING = re.compile(
+    r"(?i)^\s*(?:balance,?\s*)?(?:end|close|closing)\s+of\s+"
+    r"(?:the\s+)?(?:year|period|(?:19|20)\d{2})\b"
+)
+_CLOSING_YEAR = re.compile(r"(?i)^\s*(?:balance,?\s*)?(?:end|close|closing)\s+of\s+"
+                           r"(?:the\s+)?((?:19|20)\d{2})\b")
 _OPENING = re.compile(r"(?i)^\s*(?:balance,?\s*)?(?:beginning|begin|opening)\s+of\s+(?:the\s+)?(?:year|period)\b")
 
 _MONTHS = (
@@ -130,6 +152,13 @@ AMBIGUOUS = "?"
 # live on different header rows ("Oil" above "(MMBbl)"), so both forms are
 # recognised and a label carrying both at once still works.
 _PRODUCT_WORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # Bitumen and synthetic crude are separate columns in every integrated
+    # Canadian and ExxonMobil table, and Basin's product vocabulary is oil,
+    # gas and NGL. Folding them into oil puts three columns on one cell where
+    # the last silently wins; naming them ambiguous drops those columns and
+    # keeps the crude, NGL, gas and equivalent ones, which is the honest read.
+    (AMBIGUOUS, re.compile(r"(?i)\bbitumen\b|\bsynthetic\s+(?:crude|oil)\b"
+                           r"|\bupgraded\s+crude\b")),
     ("ngl", re.compile(r"(?i)\bngls?\b|natural\s+gas\s+liquids?")),
     ("gas", re.compile(r"(?i)\b(?:natural\s+)?gas\b|\bmcf|\bbcf|\bcubic\s+feet")),
     ("oil", re.compile(r"(?i)\boil\b|\bcrude\b|\bcondensate\b|\bliquids?\b")),
@@ -212,14 +241,21 @@ def _canonical_unit(text: str) -> str | None:
     for pattern, canonical in _UNITS:
         if pattern.match(stripped):
             return canonical
+
+    # Spelled magnitudes are tried before a bare unit token found inside the
+    # label, and the order is the whole point. "(million bbls)" contains
+    # "bbls", so searching for the token first answered `bbl` and turned
+    # ExxonMobil's 1,552 million barrels into 1,552 barrels -- a millionfold
+    # error, in the header of every table the majors publish.
+    for pattern, canonical in _SPELLED:
+        if pattern.search(text):
+            return canonical
+
     found = _UNIT_IN_LABEL.search(text)
     if found:
         for pattern, canonical in _UNITS:
             if pattern.match(found.group(1)):
                 return canonical
-    for pattern, canonical in _SPELLED:
-        if pattern.search(text):
-            return canonical
     return None
 
 
@@ -308,7 +344,6 @@ def _column_axis(table: Table) -> list[tuple[str | None, str]] | None:
 
 _TOTAL_COLUMN = re.compile(r"(?i)^total\b")
 
-
 def _single_product_axis(table: Table) -> list[tuple[str | None, str]] | None:
     """Axis for a table that states one product and splits columns another way.
 
@@ -339,9 +374,13 @@ def _single_product_axis(table: Table) -> list[tuple[str | None, str]] | None:
     product = _product(product_label)
     if product == AMBIGUOUS:
         return None
+
+    chosen = company_column(columns)
+    if chosen is None:
+        return None
     return [
-        (product, unit) if _TOTAL_COLUMN.match(label) else (AMBIGUOUS, unit)
-        for label in columns
+        (product, unit) if index == chosen else (AMBIGUOUS, unit)
+        for index in range(len(columns))
     ]
 
 
@@ -383,6 +422,11 @@ def _row_period(label: str, table_period: str) -> str | None:
     found = _DATE.search(label)
     if found:
         return _iso(found)
+    named = _CLOSING_YEAR.match(label)
+    if named:
+        # The row names its own year; keep the table's month and day, which is
+        # the filer's fiscal close.
+        return f"{named.group(1)}{table_period[4:]}"
     if _CLOSING.match(label):
         return table_period
     if _OPENING.match(label):
@@ -462,6 +506,14 @@ def readings_for_table(
         for key, pattern in _CATEGORY_PATTERNS:
             if any(pattern.match(label) for label in row if label):
                 category = key
+    # Once the table has said "proved", a bare "Developed" heading means what
+    # it says. The context is what makes the shorter form safe to read.
+    proved_context = category is not None
+    if proved_context:
+        for row in table.header_rows:
+            for key, pattern in _BARE_CATEGORY:
+                if any(pattern.match(label) for label in row if label):
+                    category = key
 
     # Components of proved developed, accumulated per period and column, to be
     # summed after the walk if the filer printed no developed line of its own.
@@ -481,6 +533,15 @@ def readings_for_table(
         matched = next(
             (key for key, pattern in _CATEGORY_PATTERNS if pattern.match(label)), None
         )
+        if matched is None and proved_context:
+            # With or without figures. ExxonMobil's section totals are "Total
+            # Developed" and "Total Undeveloped" carrying their own numbers,
+            # and those are the rows whose arithmetic closes against "Total
+            # Proved Reserves" -- the "Total Consolidated" row above each is a
+            # narrower scope that closes against nothing in the table.
+            matched = next(
+                (key for key, pattern in _BARE_CATEGORY if pattern.match(label)), None
+            )
 
         if matched is not None and not values:
             # A category header with no figures opens a block; the rows under

@@ -54,7 +54,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from basin.documents.tables import Table, parse_tables
+from basin.documents.tables import Table, company_column, parse_tables
 
 # The metric a section heading announces, and whether the figures beneath it
 # are hedged. Order matters: "average production cost" must be tested before
@@ -82,7 +82,12 @@ _SECTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (PRICE, re.compile(r"(?i)average\s+(?:realized\s+|net\s+)?sales?\s+price"
-                       r"|average\s+realized\s+price")),
+                       r"|average\s+realized\s+price"
+                       # ExxonMobil heads it "Average production prices", which
+                       # is a price despite the word production; the cost
+                       # pattern above has already claimed "production costs",
+                       # so the two cannot be confused.
+                       r"|average\s+production\s+prices?")),
     (VOLUME, re.compile(r"(?i)^\s*(?:net\s+|total\s+|annual\s+)*production"
                         r"(?:\s+volumes?|\s+data)?\s*[:.]?\s*$"
                         r"|^\s*production\s+volumes?\b")),
@@ -129,7 +134,13 @@ _COST_UNITS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bmcf\b|per\s+thousand\s+cubic\s+feet"), "USD/Mcf"),
     (re.compile(r"(?i)\bboe\b|barrels?\s+of\s+oil\s+equivalent"
                 r"|oil[\s-]equivalent\s+barrels?|equivalent\s+barrels?"), "USD/Boe"),
-    (re.compile(r"(?i)per\s+(?:net\s+)?(?:bbl|barrels?)\b"), "USD/bbl"),
+    # A bare "per barrel" on a cost row means per barrel of oil equivalent.
+    # Chevron heads it "Average production costs, per barrel" and ExxonMobil
+    # "per oil-equivalent barrel"; nobody discloses the cost of lifting a
+    # barrel of crude in isolation, because the expense is not separable by
+    # product. Reading it as USD/bbl splits one column into two unit groups
+    # that mean the same thing.
+    (re.compile(r"(?i)per\s+(?:net\s+)?(?:bbl|barrels?)\b"), "USD/Boe"),
 )
 
 # Denominators that are not a quantity of hydrocarbon. "Production cost per
@@ -332,6 +343,45 @@ def _years(table: Table) -> dict[int, str]:
     return {}
 
 
+def _segmented(table: Table) -> tuple[str, int, int] | None:
+    """``(period, company-column index, header label count)``, or None.
+
+    The majors transpose this disclosure: a column per region and one for the
+    company, with the year stated once. ExxonMobil heads it "(dollars per unit)
+    | United States | Canada/Other Americas | ... | Total | 2025", which has no
+    year *columns* at all, so the ordinary axis finds nothing and the whole
+    table is skipped.
+
+    Only tables naming exactly one year qualify. Two years and regions at once
+    is a layout this cannot read, and guessing which figure belongs to which
+    pairing is the error the axis exists to prevent.
+
+    The label count travels with the index because a header row usually carries
+    one more label than a data row carries figures -- its first cell heads the
+    row-label column -- and resolving that per row rather than assuming it is
+    what keeps the column before Total from being read as the company.
+    """
+    years = {
+        found.group(0)
+        for row in table.header_rows
+        for cell in row
+        if cell and (found := _YEAR.search(cell))
+    }
+    if len(years) != 1:
+        return None
+    close = _month_day(table.header_rows)
+    period = f"{years.pop()}-{close}"
+
+    for row in reversed(table.header_rows):
+        labels = [c for c in row if c and not _YEAR.search(c)]
+        if len(labels) < 2:
+            continue
+        chosen = company_column(labels)
+        if chosen is not None:
+            return period, chosen, len(labels)
+    return None
+
+
 def _rows(table: Table) -> list[tuple[int, str, list[str]]]:
     """``(row index, label, ordered cell texts)`` for every row."""
     grouped: dict[int, list[tuple[int, str]]] = {}
@@ -348,7 +398,13 @@ def _rows(table: Table) -> list[tuple[int, str, list[str]]]:
 def readings_for_table(table: Table, raw: str) -> list[ProductionReading]:
     """Every S-K 1204 figure in one table."""
     years = _years(table)
-    if not years:
+    # Both axes are resolved, and the row decides which applies. A header
+    # naming one year is ambiguous on its own: it is a single-period table when
+    # its rows carry one figure, and a region-segmented one when they carry
+    # eight. ExxonMobil's is the second, and treating the year map as
+    # authoritative dropped every row of it.
+    segmented = _segmented(table)
+    if not years and segmented is None:
         return []
 
     readings: list[ProductionReading] = []
@@ -400,11 +456,20 @@ def readings_for_table(table: Table, raw: str) -> list[ProductionReading]:
             # column; the rest of the section is depletion, overhead and taxes.
             if _NOT_LIFTING.search(label) or not _LIFTING_COST.match(label):
                 continue
+        row_years = years
         if len(values) != len(years):
-            # The row does not line up with the year columns. Guessing which
-            # figure belongs to which year is exactly the silent error the
-            # column axis exists to prevent.
-            continue
+            if segmented is None:
+                # The row lines up with neither axis. Guessing which figure
+                # belongs to which period is the silent error the axis exists
+                # to prevent.
+                continue
+            period, column, label_count = segmented
+            if label_count == len(values) + 1:
+                # The header's first label heads the row-label column.
+                column -= 1
+            if not 0 <= column < len(values):
+                continue
+            values, row_years = [values[column]], {0: period}
 
         product = _product(label)
         if metric == COST:
@@ -436,12 +501,12 @@ def readings_for_table(table: Table, raw: str) -> list[ProductionReading]:
                     product=product,
                     value=value,
                     unit=unit,
-                    period_end=years[position],
+                    period_end=row_years[position],
                     is_hedged=hedged if metric == PRICE else None,
                     table_index=table.index,
                     section_label=section_label,
                     row_label=label,
-                    column_label=str(years[position][:4]),
+                    column_label=str(row_years[position][:4]),
                     source_span=" ".join([label] + cells)[:400],
                     char_offset=table.start,
                 )

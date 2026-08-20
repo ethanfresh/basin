@@ -302,3 +302,52 @@ class TestLiftingCostRow:
         """)
         r = _find(production_readings(html), COST)
         assert (r.value, r.unit) == (pytest.approx(12.60), "USD/Boe")
+
+
+class TestSegmentedLayout:
+    """The majors transpose this disclosure: a column per region, one year."""
+
+    EXXON = (
+        "<table>"
+        "<tr><td>(dollars per unit)</td><td>United States</td><td>Europe</td>"
+        "<td>Total</td></tr>"
+        "<tr><td>2025</td><td></td><td></td><td></td></tr>"
+        "<tr><td>Average production prices</td><td></td><td></td><td></td></tr>"
+        "<tr><td>Crude oil, per barrel</td><td>62.10</td><td>70.40</td><td>65.64</td></tr>"
+        "<tr><td>Natural gas, per thousand cubic feet</td><td>2.80</td><td>9.10</td>"
+        "<td>3.15</td></tr>"
+        "<tr><td>Average production costs, per barrel</td><td>10.20</td><td>14.80</td>"
+        "<td>11.29</td></tr>"
+        "</table>"
+    )
+
+    def test_the_company_column_is_taken_not_a_region(self):
+        # A region's figure is real, but stored under the filer's identity it
+        # understates the filer by the rest of the world.
+        r = _find(production_readings(self.EXXON), PRICE, "oil")
+        assert r.value == pytest.approx(65.64)
+
+    def test_a_header_naming_one_year_is_not_a_year_axis(self):
+        # It is ambiguous alone: a single-period table when its rows carry one
+        # figure, a region-segmented one when they carry three. Treating the
+        # year map as authoritative dropped every row of ExxonMobil's.
+        assert {r.period_end for r in production_readings(self.EXXON)} == {
+            "2025-12-31",
+        }
+
+    def test_a_price_heading_may_say_production(self):
+        # "Average production prices" is a price despite the word production;
+        # the cost pattern has already claimed "production costs".
+        prices = [r for r in production_readings(self.EXXON) if r.concept_key == PRICE]
+        assert len(prices) == 2
+
+    def test_cost_per_barrel_on_a_cost_row_means_per_boe(self):
+        # Nobody discloses the cost of lifting a barrel of crude in isolation;
+        # the expense is not separable by product. Reading it as USD/bbl splits
+        # one column into two unit groups that mean the same thing.
+        r = _find(production_readings(self.EXXON), COST)
+        assert (r.value, r.unit) == (pytest.approx(11.29), "USD/Boe")
+
+    def test_a_segmented_table_with_no_company_column_yields_nothing(self):
+        html = self.EXXON.replace("<td>Total</td>", "<td>Asia</td>")
+        assert production_readings(html) == []
