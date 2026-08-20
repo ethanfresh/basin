@@ -1208,7 +1208,6 @@ async function loadConcepts() {
   concepts = await api("/api/concepts");
   $("#history-concept").innerHTML = concepts
     .map((c) => `<option value="${c.key}">${esc(c.label)}</option>`).join("");
-  await loadPeriods();
 }
 
 async function loadPeriods() {
@@ -1216,10 +1215,22 @@ async function loadPeriods() {
   // Default to each company's own latest rather than to the newest period in
   // the store. The newest period is usually one off-cycle filer's quarter --
   // the panel used to open on 2026-03-31 showing a single company.
+  const keep = $("#period").value;
   $("#period").innerHTML =
     `<option value="latest">Latest reported</option>` +
-    periods.map((p) => `<option value="${p}">${p}</option>`).join("");
-  await loadPanel();
+    periods.map((p) => `<option value="${p}"${p === keep ? " selected" : ""}>${p}</option>`).join("");
+}
+
+// The three requests behind the panel, started together.
+//
+// They used to run in a chain -- concepts, then periods, then the grid -- and
+// none of them needs the one before it: the grid opens on "latest", which is a
+// mode rather than a period the list has to supply. Chained, the wait was the
+// sum of all three; started together it is the longest one.
+async function loadPanelView() {
+  const panel = loadPanel();
+  await Promise.all([loadConcepts(), loadPeriods(), panel]);
+  renderPanel();   // again, now that the concept labels have arrived
 }
 
 async function loadPanel() {
@@ -1830,7 +1841,16 @@ $("#stats-wrap").hidden = true;
 // Stats after cohorts, not alongside: loadCohorts picks the default cohort, and
 // counting before it is chosen would render store-wide totals under a caption
 // claiming they describe a cohort.
-loadCohorts().then(loadStats).then(loadConcepts);
+//
+// After, but not before the grid. Awaiting the counts here put the headline
+// numbers ahead of the table in the queue, so the panel waited on a query it
+// does not use -- and the only way to see the grid was to touch a control that
+// calls loadPanel directly, which is what Normalize does. They start together
+// and each renders when it is ready.
+loadCohorts().then(() => {
+  loadStats();
+  return loadPanelView();
+});
 </script>
 </body>
 </html>
