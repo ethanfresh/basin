@@ -181,8 +181,15 @@ def match_fact(
     if not ranked:
         return None
     ranked.sort(key=lambda pair: pair[0])
-    # A value that matches nothing about the concept is not evidence.
+    # A value that matches nothing about the concept is not evidence -- and a
+    # caller with no concept to match on has nothing for the value to be
+    # evidence *of*. Several figures in a filing round to the same number, so
+    # taking the earliest would cite a location the reader cannot check: a fact
+    # of 20,581 Bcfe matched an unrelated "(21)" carrying a declared scale of
+    # 10^3, which rounds to the same and is half a page away. A caller without
+    # a tag belongs on the text path, which at least reports how many times the
+    # value occurs.
     best_key, best = ranked[0]
-    if concept_tag and best_key[0] == 1:
+    if best_key[0] == 1:
         return None
     return best
