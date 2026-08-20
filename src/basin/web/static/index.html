@@ -667,8 +667,14 @@
     /* Below this width the citation cannot share a row with the figure, so
        it moves under the company name rather than being dropped -- a value
        without its source is the one thing that must never render. */
-    .col-product { display: none; }
     .name .cik { display: none; }
+
+    /* Product stays. Rows are keyed by company AND product, so this is the
+       column that tells two rows of the same filer apart: dropping it leaves
+       a reader looking at four DEC rows with no way to know which is oil, gas
+       or the total. It is a short badge and costs little width. */
+    .col-product { padding-left: 8px; padding-right: 8px; }
+    .col-product .tag { font-size: 10px; padding: 1px 5px; }
 
     /* Reclaim the ticker column so the pinned company name keeps enough room
        for the marks to be readable alongside it. */

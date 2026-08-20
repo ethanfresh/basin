@@ -49,7 +49,6 @@ RESERVE_CONCEPTS = (
 DIRECT_CONCEPTS = (
     "capex",
     "oil_and_gas_revenue",
-    "production_volume",
     # The reserve resolver reads a standardized measure to test reserves
     # against, and clears the whole period when that test cannot be made. That
     # is right for the reserve volumes, whose magnitude depended on the test,
@@ -58,6 +57,100 @@ DIRECT_CONCEPTS = (
     # it. Filled here only where the resolver left it blank.
     "standardized_measure",
 )
+
+
+# A year's production against the reserves it came out of. Reserve life over
+# the 232 production facts that already have a magnitude and a same-product
+# reserve to check against runs 1.1 years at the low end to 18 at the third
+# quartile, with a tenth of a percent above 200 -- and everything past that is
+# in the millions, which is a misread column rather than a long-lived asset.
+# The band admits any real reserve life, including a very long-lived gas asset,
+# and catches a reading wrong by three orders of magnitude or more.
+MIN_RESERVE_LIFE_YEARS = 0.5
+MAX_RESERVE_LIFE_YEARS = 200.0
+
+
+def resolve_production(conn, counts) -> None:
+    """Record production volumes, corroborated against the filer's own reserves.
+
+    A production volume has the same problem a reserve volume has -- the filer
+    declares the unit and the declaration cannot be taken at face value -- but
+    none of the standardized measure's help in solving it: the measure values a
+    reserve base, not a year's output.
+
+    What production does have is the reserve base itself, already resolved. A
+    year's production divided into proved reserves is reserve life, and that is
+    a quantity with a known range. So a declared unit that implies a plausible
+    reserve life is corroborated by the filer's own disclosure, and one that
+    implies half a million years is not.
+
+    The comparison is like for like -- the same product on both sides, or
+    undimensioned against undimensioned. Measuring one product line against the
+    whole reserve base is what makes an NGL line look like a 400-year asset, and
+    it is the same asymmetry the value-per-barrel test is careful about.
+
+    A figure read off a printed table keeps the treatment it has elsewhere: its
+    unit is the column header standing over it, which is evidence, so it
+    resolves even where no reserve is available to test it. A unit tagged in
+    XBRL is a declaration and nothing more, so with no reserve to check it
+    against it stays unresolved rather than trusted.
+    """
+    reserves = {
+        (r["cik"], r["period_end"], r["product"] or ""): r["canonical_value"]
+        for r in conn.execute(
+            """
+            SELECT f.cik, f.period_end, f.product, s.canonical_value
+            FROM fact f JOIN fact_scale s ON s.fact_id = f.id
+            WHERE f.concept_key = 'proved_reserves_boe' AND s.canonical_value > 0
+            """
+        )
+    }
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT f.id, f.cik, f.period_end, f.product, f.value, f.unit,
+                   f.extracted_by
+            FROM fact_current f
+            WHERE f.concept_key = 'production_volume'
+            """
+        )
+    ]
+    for row in rows:
+        conversion = conversion_for(row["unit"])
+        if conversion is None or conversion.canonical == "USD":
+            counts["production: no canonical form for the unit"] += 1
+            continue
+        canonical = row["value"] * conversion.factor
+        if not canonical or abs(canonical) > 1e11:
+            counts["production: implausible magnitude, cleared"] += 1
+            clear_scale(conn, row["id"])
+            continue
+
+        reserve = reserves.get((row["cik"], row["period_end"], row["product"] or ""))
+        from_table = str(row["extracted_by"] or "").startswith("table:")
+        if reserve:
+            life = reserve / canonical
+            if not (MIN_RESERVE_LIFE_YEARS <= life <= MAX_RESERVE_LIFE_YEARS):
+                counts["production: rejected on reserve life"] += 1
+                clear_scale(conn, row["id"])
+                continue
+            basis = (
+                f"{life:,.0f} years of reserve life against this filer's own "
+                f"proved reserves for the same product"
+            )
+        elif from_table:
+            basis = "read from the printed table; unit from the column header"
+        else:
+            # Nothing to check the declaration against.
+            counts["production: unit tagged in XBRL, uncorroborated"] += 1
+            continue
+
+        record_scale(
+            conn, row["id"], 1.0, canonical, conversion.canonical, basis,
+            conversion_note=conversion.note or None,
+        )
+        counts["production: resolved"] += 1
 
 
 def resolve_direct(conn, counts) -> None:
@@ -406,6 +499,9 @@ def main(argv: list[str] | None = None) -> int:
     conn.commit()
 
     resolve_direct(conn, counts)
+    # After the reserve resolver: reserve life is measured against what it
+    # decided, so this cannot run before it has decided.
+    resolve_production(conn, counts)
     conn.commit()
 
     total_facts = conn.execute("SELECT COUNT(*) FROM fact_scale").fetchone()[0]
